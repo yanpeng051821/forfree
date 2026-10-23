@@ -1,0 +1,24 @@
+<view wx:if="{{authenticated}}" class="page tasks-page">
+  <date-rail wx:if="{{loggedIn}}" selected-date="{{selectedDate}}" counts="{{dateCounts}}" show-today="{{false}}" bindchange="reviewDate" />
+  <view class="task-list-head"><text class="muted">{{loggedIn ? visibleProjects.length + ' 家商户' : ''}}</text><view class="icon-button" bindtap="exportDay" aria-label="导出选中日期的有效商品" hover-class="press"><image class="icon sm" src="/assets/icons/export.png" /></view></view>
+  <block>
+    <view wx:if="{{loading}}" class="loading-line">加载中…</view><view wx:elif="{{!visibleProjects.length}}" class="empty"><view class="name">{{selectedDate ? '这一天没有看货记录' : '暂无看货记录'}}</view><view class="notice">{{selectedDate ? '选择其他日期，或点右下角新增商户' : '点右下角新增商户'}}</view></view>
+    <view wx:for="{{visibleProjects}}" wx:key="supplier" class="task-row {{item.projectId === active ? 'task-active' : ''}}"><view class="task-body" data-index="{{index}}" bindtap="select" hover-class="press"><view class="task-date">{{item.date}}<text wx:if="{{item.demo}}" class="demo-label">演示</text></view><view class="task-name">{{item.supplier || '未填写商户'}}<text wx:if="{{item.projectId === active}}" class="dot current-dot" /></view><view class="task-market">{{item.market}}</view><view wx:if="{{item.supplierContact}}" class="merchant-list-contact">{{item.supplierContact}}</view><view class="task-counts"><text class="num task-total">{{item.total}}</text><text>件商品</text><text wx:if="{{item.pending}}" class="task-pending">{{item.pending}} 待核对</text></view></view><view class="task-tools"><view class="icon-button" data-index="{{index}}" bindtap="select" aria-role="button" aria-label="查看这家商户" hover-class="press" hover-stay-time="80"><image class="icon sm" src="/assets/icons/chevron.png" /></view></view></view>
+  </block><view wx:if="{{error && !showCreate}}" class="error">{{error}}<view class="link" bindtap="load" hover-class="press" hover-stay-time="80">重试</view></view>
+  <button wx:if="{{loggedIn && !showCreate}}" class="create-orb" bindtap="toggleCreate" aria-label="新增商户" hover-class="create-orb-pressed" hover-stay-time="80"><text class="plus-icon">+</text></button>
+  <view wx:if="{{showCreate}}" class="create-overlay" style="bottom:{{keyboardHeight}}px" catchtouchmove="stopTouch">
+    <view class="create-backdrop" catchtap="closeCreate" aria-label="关闭新增商户" />
+    <view class="create-card" aria-role="dialog" aria-modal="true" aria-label="新增商户" catchtap="stopTouch">
+      <view class="create-heading"><text>新增商户</text><button class="create-close" bindtap="closeCreate" disabled="{{saving}}" aria-label="关闭新增商户" hover-class="control-pressed" hover-stay-time="80"><text class="close-icon">×</text></button></view>
+      <scroll-view class="create-fields" scroll-y="{{true}}" style="height:{{createBodyHeight}}px">
+        <view wx:if="{{pending}}" class="create-notice">上次保存尚未确认，请先核查，避免重复新建。</view>
+        <view class="field"><text class="label">商户名称</text><input value="{{name}}" disabled="{{pending || saving}}" maxlength="120" data-key="name" bindinput="input" bindkeyboardheightchange="keyboard" adjust-position="{{false}}" cursor-spacing="16" confirm-type="next" bindconfirm="nextField" aria-label="商户名称" placeholder="店名 / 摊位号" /></view>
+        <view class="field"><text class="label">联系方式</text><input value="{{supplierContact}}" disabled="{{pending || saving}}" maxlength="200" data-key="supplierContact" bindinput="input" bindkeyboardheightchange="keyboard" adjust-position="{{false}}" confirm-type="next" placeholder="手机 / 微信 / 联系人 · 选填" /></view>
+        <view class="field"><text class="label">市场</text><input value="{{market}}" focus="{{marketFocus}}" disabled="{{pending || saving}}" maxlength="120" data-key="market" bindinput="input" bindkeyboardheightchange="keyboard" bindblur="marketBlur" adjust-position="{{false}}" cursor-spacing="16" confirm-type="done" aria-label="采购市场" placeholder="采购地点 · 选填" /></view>
+        <view class="create-date"><text>日期</text><picker mode="date" value="{{date}}" disabled="{{pending || saving}}" bindchange="dateChange"><view class="create-date-value"><text>{{date}}</text><image class="icon sm" src="/assets/icons/chevron.png" /></view></picker></view>
+        <view wx:if="{{error}}" class="create-error" aria-live="polite">{{error}}</view>
+      </scroll-view>
+      <view class="create-footer"><button class="primary" loading="{{saving}}" disabled="{{saving}}" bindtap="create" hover-class="button-pressed" hover-stay-time="80">{{pending ? '核查上次保存' : '开始看货'}}</button></view>
+    </view>
+  </view>
+</view>

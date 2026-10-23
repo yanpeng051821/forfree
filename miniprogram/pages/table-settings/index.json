@@ -1,0 +1,7 @@
+{
+  "navigationBarTitleText": "表格设置",
+  "usingComponents": {
+    "value-control": "/components/value-control/index",
+    "color-control": "/components/color-control/index"
+  }
+}

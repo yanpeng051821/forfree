@@ -1,99 +1,297 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync, readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
-import sharp from "sharp";
-import type { Photo, Product, ProductFields, Project } from "./types";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { emptyFields, emptyProfile, type UserProfile, type UserProfileFields, type Photo, type Product, type ProductFields, type Project, type ProjectSummary } from "./types";
+import { dataDir, photoStorage } from "./storage";
+import { migrate } from "./migrations";
+import { AppError, conflict, notFound } from "./errors";
+import { chinaDayBounds } from './dates';
 
-// Runtime storage is external state, never a build/deployment input.
-export const dataDir = () => resolve(/* turbopackIgnore: true */ process.env.APP_DATA_DIR || join(process.cwd(), ".data"));
-type Cached = typeof globalThis & { huojiDBs?: Map<string, DatabaseSync> };
+const connections = new Map<string, DatabaseSync>();
 export function db(): DatabaseSync {
   const root = dataDir();
-  const cache = (globalThis as Cached).huojiDBs ||= new Map();
-  let connection = cache.get(root);
+  let connection = connections.get(root);
   if (!connection) {
-    mkdirSync(join(root, "photos"), { recursive: true });
-    connection = new DatabaseSync(join(root,"market.sqlite"));
-    connection.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
-      CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, market TEXT NOT NULL, date TEXT NOT NULL, demo INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), fields TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS photos (id TEXT PRIMARY KEY, product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE, name TEXT NOT NULL, position INTEGER NOT NULL);
-      CREATE INDEX IF NOT EXISTS products_project ON products(project_id);
-      CREATE INDEX IF NOT EXISTS photos_product ON photos(product_id);`);
-    cache.set(root,connection);
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    connection = new DatabaseSync(join(root, "market.sqlite"));
+    try {
+      connection.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000");
+      migrate(connection);
+    } catch (error) { connection.close(); throw error; }
+    connections.set(root, connection);
   }
   return connection;
 }
-const photoPath = (id: string) => join(dataDir(), "photos", `${id}.jpg`);
-export function readPhoto(id: string): Buffer | null {
-  if (!/^[a-f0-9-]{36}$/.test(id) || !db().prepare("SELECT id FROM photos WHERE id=?").get(id)) return null;
-  const path = photoPath(id);
-  return existsSync(path) ? readFileSync(path) : null;
+export function closeDB() {
+  const root = dataDir();
+  connections.get(root)?.close(); connections.delete(root);
 }
-export function listProjects(): Project[] {
-  return (db().prepare("SELECT id,name,market,date,demo,created_at AS createdAt FROM projects ORDER BY created_at DESC").all() as unknown as Project[]).map(p=>({...p,demo:Boolean(p.demo)}));
+export function getProfile(owner: string): UserProfile {
+  const row = db().prepare("SELECT fields,version FROM user_profiles WHERE owner_id=?").get(owner) as { fields: string; version: number } | undefined;
+  return row ? { ...emptyProfile, ...JSON.parse(row.fields), version: row.version } : { ...emptyProfile, version: 0 };
 }
-export function getProject(id: string) { return listProjects().find(p=>p.id===id); }
-export function createProject(value: Pick<Project,"name"|"market"|"date">, demo=false): Project {
-  const project: Project = {...value, id:randomUUID(),demo,createdAt:new Date().toISOString()};
-  db().prepare("INSERT INTO projects VALUES (?,?,?,?,?,?)").run(project.id, project.name, project.market, project.date, Number(demo), project.createdAt);
-  return project;
+export function saveProfile(owner: string, fields: UserProfileFields, version: number): UserProfile {
+  return transaction(() => {
+    const current = getProfile(owner), { version: priorVersion, ...prior } = current;
+    if (stableJson(prior) === stableJson(fields)) return current;
+    if (priorVersion !== version) conflict("个人资料已在其他设备更新，请重新打开后修改");
+    db().prepare("INSERT INTO user_profiles (owner_id,fields,version) VALUES (?,?,?) ON CONFLICT(owner_id) DO UPDATE SET fields=excluded.fields,version=excluded.version").run(owner, JSON.stringify(fields), version + 1);
+    return { ...fields, version: version + 1 };
+  });
 }
-type ProductRow = {id:string;project_id:string;fields:string;created_at:string;updated_at:string};
-function hydrate(row: ProductRow): Product {
-  const photos = (db().prepare("SELECT id,name FROM photos WHERE product_id=? ORDER BY position").all(row.id) as unknown as Photo[]).map(photo=>({...photo,url:`/api/photos/${photo.id}`}));
-  return {...JSON.parse(row.fields),id:row.id,projectId:row.project_id,photos,createdAt:row.created_at,updatedAt:row.updated_at};
-}
-export function listProducts(projectId: string): Product[] {
-  return (db().prepare("SELECT * FROM products WHERE project_id=? ORDER BY created_at DESC").all(projectId) as unknown as ProductRow[]).map(hydrate);
-}
-export function getProduct(id: string): Product | undefined {
-  const row = db().prepare("SELECT * FROM products WHERE id=?").get(id) as ProductRow | undefined;
-  return row ? hydrate(row) : undefined;
-}
-export async function prepareImage(file: File): Promise<{ name:string;bytes:Buffer }> {
-  if (file.size > 8*1024*1024 || file.size===0) throw new Error("每张照片须大于0且不超过8MB");
-  if (!["image/jpeg","image/png","image/webp","image/heic","image/heif"].includes(file.type)) throw new Error("请选择 JPG、PNG 或 WebP 图片；手机可尝试使用兼容格式拍照。");
-  try {
-    const image=sharp(Buffer.from(await file.arrayBuffer()),{limitInputPixels:40000000});
-    const metadata=await image.metadata();
-    if(!["jpeg","png","webp","heif"].includes(metadata.format || "")) throw new Error("不支持的图片格式");
-    const bytes=await image.rotate().resize(1600,1600,{fit:"inside",withoutEnlargement:true}).jpeg({quality:85}).toBuffer();
-    return {name:file.name.slice(0,200),bytes};
-  } catch { throw new Error("这张照片无法读取，请改用 JPG、PNG 或 WebP 格式。"); }
-}
-export async function saveProduct(projectId:string, fields:ProductFields, uploads:{name:string;bytes:Buffer}[], id?:string, keepPhotoIds:string[]=[]): Promise<Product> {
-  if (!getProject(projectId)) throw new Error("看货任务不存在");
-  const existing=id ? getProduct(id) : undefined;
-  if (id && (!existing || existing.projectId!==projectId)) throw new Error("商品不存在");
-  const keep=(existing?.photos || []).filter(photo=>keepPhotoIds.includes(photo.id));
-  if (keepPhotoIds.length!==keep.length || new Set(keepPhotoIds).size!==keepPhotoIds.length) throw new Error("照片归属无效");
-  if (uploads.length+keep.length>6) throw new Error("每件商品最多6张照片");
-  const productId=id || randomUUID(), now=new Date().toISOString();
-  const added=uploads.map(photo=>({...photo,id:randomUUID()}));
-  const connection=db();
+export function transaction<T>(work: () => T): T {
+  const connection = db();
   connection.exec("BEGIN IMMEDIATE");
-  try {
-    if (existing) connection.prepare("UPDATE products SET fields=?,updated_at=? WHERE id=?").run(JSON.stringify(fields),now,productId);
-    else connection.prepare("INSERT INTO products VALUES (?,?,?,?,?)").run(productId,projectId,JSON.stringify(fields),now,now);
-    connection.prepare("DELETE FROM photos WHERE product_id=?").run(productId);
-    for (const [position,photo] of [...keep,...added].entries()) {
-      if ("bytes" in photo) writeFileSync(photoPath(photo.id),photo.bytes);
-      connection.prepare("INSERT INTO photos VALUES (?,?,?,?)").run(photo.id,productId,photo.name,position);
+  try { const result = work(); connection.exec("COMMIT"); return result; }
+  catch (error) { connection.exec("ROLLBACK"); throw error; }
+}
+export function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.entries(value).filter(([, v]) => v !== undefined).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${JSON.stringify(k)}:${stableJson(v)}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+function replay<T>(owner: string, requestKey: string, payload: unknown, work: () => T): T {
+  const digest = createHash("sha256").update(stableJson(payload)).digest("hex");
+  return transaction(() => {
+    const prior = db().prepare("SELECT digest,result FROM receipts WHERE owner_id=? AND request_key=?").get(owner, requestKey) as { digest: string; result: string } | undefined;
+    if (prior) {
+      if (prior.digest !== digest) conflict("同一请求编号对应的内容已变化，请重新提交");
+      return JSON.parse(prior.result) as T;
     }
-    connection.exec("COMMIT");
-  } catch(error) {
-    connection.exec("ROLLBACK");
-    for (const photo of added) {try {unlinkSync(photoPath(photo.id));} catch { /* missing partial write */ }}
-    throw error;
+    const result = work();
+    db().prepare("INSERT INTO receipts VALUES (?,?,?,?,?)").run(owner, requestKey, digest, JSON.stringify(result), Date.now());
+    return result;
+  });
+}
+export function listProjects(owner: string): Project[] {
+  const projects = db().prepare("SELECT id,name,market,date,demo,created_at AS createdAt,supplier,supplier_contact AS supplierContact FROM projects WHERE owner_id=? ORDER BY created_at DESC,id DESC").all(owner) as unknown as Project[];
+  const summaries = db().prepare(`SELECT p.id, ${summaryColumns} FROM projects p LEFT JOIN products pr ON pr.project_id=p.id AND pr.deleted_at IS NULL WHERE p.owner_id=? GROUP BY p.id`).all(owner) as unknown as (ProjectSummary & { id: string })[];
+  const byId = new Map(summaries.map(summary => { const { id, ...values } = summary; return [id, values]; }));
+  return projects.map(p => ({ ...p, demo: Boolean(p.demo), summary: byId.get(p.id) }));
+}
+const summaryColumns = `COUNT(pr.id) AS total,
+  COALESCE(SUM(CASE WHEN json_extract(pr.fields,'$.confirmed')=1 THEN 1 ELSE 0 END),0) AS confirmed,
+  COALESCE(SUM(CASE WHEN pr.id IS NOT NULL AND COALESCE(json_extract(pr.fields,'$.confirmed'),0)=0 THEN 1 ELSE 0 END),0) AS pending,
+  COALESCE(SUM(CASE WHEN pr.id IS NOT NULL AND json_extract(pr.fields,'$.unitPrice') IS NULL THEN 1 ELSE 0 END),0) AS missingPrice,
+  COUNT(DISTINCT NULLIF(TRIM(json_extract(pr.fields,'$.supplier')),'')) AS suppliers,
+  COALESCE(SUM((SELECT COUNT(*) FROM media m WHERE m.product_id=pr.id)),0) AS photos`;
+export function projectSummary(owner: string, projectId: string, filter: ProductFilter = {}): ProjectSummary {
+  if (filter.dateFrom !== undefined || filter.dateTo !== undefined || filter.date || filter.favorite || filter.supplier !== undefined) return pageProducts(owner, projectId, undefined, 1, filter).summary;
+  getProject(owner, projectId);
+  return db().prepare(`SELECT ${summaryColumns} FROM products pr WHERE pr.project_id=? AND pr.deleted_at IS NULL`).get(projectId) as unknown as ProjectSummary;
+}
+export function getProject(owner: string, id: string): Project {
+  const row = db().prepare("SELECT id,name,market,date,demo,created_at AS createdAt,supplier,supplier_contact AS supplierContact FROM projects WHERE owner_id=? AND id=?").get(owner, id) as Project | undefined;
+  if (!row) notFound();
+  return { ...row, demo: Boolean(row.demo) };
+}
+export function createProject(owner: string, value: Pick<Project, "name" | "market" | "date" | "supplier" | "supplierContact">, requestKey: string): Project {
+  return replay(owner, requestKey, { operation: "createProject", ...value }, () => {
+    const project: Project = { ...value, id: randomUUID(), demo: false, createdAt: new Date().toISOString() };
+    db().prepare("INSERT INTO projects (id,name,market,date,demo,created_at,owner_id,supplier,supplier_contact) VALUES (?,?,?,?,?,?,?,?,?)").run(project.id, project.name, project.market, project.date, 0, project.createdAt, owner,project.supplier ?? null,project.supplierContact ?? null);
+    return project;
+  });
+}
+type ProductRow = { deleted_at?:string|null; id: string; project_id: string; fields: string; version: number; created_at: string; updated_at: string; taskName?: string; taskMarket?: string; taskDate?: string; demo?: number };
+type MediaRow = { id: string; owner_id: string; product_id: string | null; name: string; expires_at: number | null };
+function hydrate(row: ProductRow): Product {
+  const photos = (db().prepare("SELECT id,name FROM media WHERE product_id=? ORDER BY position").all(row.id) as unknown as Photo[]).map(photo => ({ ...photo, url: `/api/photos/${photo.id}` }));
+  return { ...emptyFields, ...JSON.parse(row.fields), id: row.id, projectId: row.project_id, version: row.version, photos, createdAt: row.created_at, updatedAt: row.updated_at, deletedAt:row.deleted_at, taskName: row.taskName, taskMarket: row.taskMarket, taskDate: row.taskDate, demo: Boolean(row.demo) };
+}
+function encodeProductCursor(projectId: string, id: string): string {
+  return createHash("sha256").update(projectId).update("\0").update(id).digest("base64url");
+}
+function resolveProductCursor(owner: string, scope: string, cursor: string, from: string, values: (string | number)[]): { id: string; created_at: string } {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(cursor)) throw new AppError("INVALID_CURSOR", "分页游标无效");
+  const bytes = Buffer.from(cursor, "base64url");
+  if (bytes.length !== 32 || bytes.toString("base64url") !== cursor) throw new AppError("INVALID_CURSOR", "分页游标无效");
+  const boundaries = db().prepare("SELECT pr.id,pr.created_at " + from).all(...values) as { id: string; created_at: string }[];
+  const boundary = boundaries.find(row => encodeProductCursor(scope, row.id) === cursor);
+  if (!boundary) throw new AppError("INVALID_CURSOR", "分页游标无效");
+  return boundary;
+}
+export type RecordDateRange = { dateFrom?: string; dateTo?: string };
+export type ProductFilter = RecordDateRange & { supplier?: string; q?: string; date?: string; favorite?: boolean; status?: "all" | "pending" | "confirmed" | "missingPrice" };
+export function recordDateRangeBounds(date: string | undefined, range: RecordDateRange = {}): [string, string] | undefined {
+  const { dateFrom, dateTo } = range;
+  if (dateFrom !== undefined || dateTo !== undefined) {
+    const valid = (value: string | undefined) => Boolean(value && !value.startsWith('0000') && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value);
+    if (!valid(dateFrom) || !valid(dateTo) || date || dateFrom! > dateTo!) throw new AppError('VALIDATION', '日期范围无效');
+    return [chinaDayBounds(dateFrom!)[0], chinaDayBounds(dateTo!)[1]];
   }
-  for (const photo of existing?.photos || []) if (!keepPhotoIds.includes(photo.id)) {try {unlinkSync(photoPath(photo.id));} catch { /* record already removed */ }}
-  return getProduct(productId)!;
+  return date ? chinaDayBounds(date) : undefined;
 }
-export function deleteProduct(id:string) {
-  const product=getProduct(id); if (!product) return false;
-  db().prepare("DELETE FROM products WHERE id=?").run(id);
-  for(const photo of product.photos) {try {unlinkSync(photoPath(photo.id));} catch { /* stale file */ }}
-  return true;
+function recordScope(owner: string, projectId: string | undefined, date?: string, favorite = false, range: RecordDateRange = {}) {
+  const bounds = recordDateRangeBounds(date, range);
+  if (projectId) getProject(owner, projectId);
+  if (!projectId && !bounds && !favorite) throw new AppError('INVALID_SCOPE', '请选择任务、日期或收藏');
+  const clauses = ['p.owner_id=?','pr.deleted_at IS NULL'], values: (string | number)[] = [owner];
+  if (projectId) { clauses.push('p.id=?'); values.push(projectId); }
+  if (bounds) { clauses.push('pr.created_at>=? AND pr.created_at<?'); values.push(...bounds); }
+  if (favorite) clauses.push("json_extract(pr.fields,'$.favorite')=1");
+  return { clauses, values };
 }
+export function pageProducts(owner: string, projectId: string | undefined, cursor: string | undefined, limit: number, filter: ProductFilter = {}): { items: Product[]; nextCursor: string | null; summary: ProjectSummary; matchedCount: number } {
+  const { clauses, values } = recordScope(owner, projectId, filter.date, filter.favorite, filter);
+  if (filter.supplier !== undefined) { clauses.push("COALESCE(json_extract(pr.fields,'$.supplier'),'')=?"); values.push(filter.supplier); }
+  const baseFrom = 'FROM products pr JOIN projects p ON pr.project_id=p.id WHERE ' + clauses.join(' AND ');
+  const summary = db().prepare('SELECT ' + summaryColumns + ' ' + baseFrom).get(...values) as unknown as ProjectSummary;
+  const scope = (projectId || 'all') + (filter.date ? ':' + filter.date : '') + (filter.favorite ? ':favorites' : '') + (filter.supplier !== undefined ? ':supplier:' + filter.supplier : '') + (filter.dateFrom ? ':range:' + filter.dateFrom + ':' + filter.dateTo : '');
+  // Resolve the boundary against the owned date/task scope, independent of a status edit.
+  const boundary = cursor ? resolveProductCursor(owner, scope, cursor, baseFrom, values) : null;
+  if (filter.status === "confirmed") clauses.push("json_extract(pr.fields,'$.confirmed')=1");
+  if (filter.status === "pending") clauses.push("COALESCE(json_extract(pr.fields,'$.confirmed'),0)=0");
+  if (filter.status === "missingPrice") clauses.push("json_extract(pr.fields,'$.unitPrice') IS NULL");
+  if (filter.q) {
+    const keys = ["name", "sku", "supplier", "supplierContact", "description", "notes", "evaluation"];
+    clauses.push("(" + keys.map(key => `LOWER(COALESCE(json_extract(pr.fields,'$.${key}'),'')) LIKE ? ESCAPE '\\'`).join(" OR ") + ")");
+    const pattern = "%" + filter.q.toLowerCase().replace(/[\\%_]/g, char => "\\" + char) + "%";
+    values.push(...keys.map(() => pattern));
+  }
+  const from = "FROM products pr JOIN projects p ON pr.project_id=p.id WHERE " + clauses.join(" AND ");
+  const matchedCount = (db().prepare("SELECT COUNT(*) AS n " + from).get(...values) as { n: number }).n;
+  if (boundary) { clauses.push("(pr.created_at<? OR (pr.created_at=? AND pr.id<?))"); values.push(boundary.created_at, boundary.created_at, boundary.id); }
+  const rows = db().prepare("SELECT pr.*,p.name AS taskName,p.market AS taskMarket,p.date AS taskDate,p.demo FROM products pr JOIN projects p ON pr.project_id=p.id WHERE " + clauses.join(" AND ") + " ORDER BY pr.created_at DESC,pr.id DESC LIMIT ?").all(...values, limit + 1) as unknown as ProductRow[];
+  const hasMore = rows.length > limit, page = rows.slice(0, limit);
+  return { items: page.map(hydrate), nextCursor: hasMore && page.length ? encodeProductCursor(scope, page[page.length - 1].id) : null, summary, matchedCount };
+}
+export type MerchantSummary = { supplier: string; supplierContact: string; total: number; confirmed: number; pending: number; missingPrice: number };
+export type MerchantVisit = MerchantSummary & { projectId: string; date: string; market: string; demo: boolean };
+export function listMerchantVisits(owner: string,date:string): MerchantVisit[] {
+  const [from,to]=chinaDayBounds(date);
+  const rows=db().prepare("SELECT p.id projectId,? date,p.market,p.demo,COALESCE(json_extract(pr.fields,'$.supplier'),p.supplier,'') supplier,COALESCE(json_extract(json_group_array(json_extract(pr.fields,'$.supplierContact') ORDER BY pr.created_at DESC,pr.id DESC) FILTER(WHERE COALESCE(json_extract(pr.fields,'$.supplierContact'),'')<>''),'$[0]'),p.supplier_contact,'') supplierContact,COUNT(pr.id) total,COUNT(*) FILTER(WHERE json_extract(pr.fields,'$.confirmed')=1) confirmed,COUNT(*) FILTER(WHERE pr.id IS NOT NULL AND COALESCE(json_extract(pr.fields,'$.confirmed'),0)=0) pending,COUNT(*) FILTER(WHERE pr.id IS NOT NULL AND json_extract(pr.fields,'$.unitPrice') IS NULL) missingPrice FROM projects p LEFT JOIN products pr ON pr.project_id=p.id AND pr.deleted_at IS NULL AND pr.created_at>=? AND pr.created_at<? WHERE p.owner_id=? AND (pr.id IS NOT NULL OR (p.date=? AND p.supplier IS NOT NULL)) GROUP BY p.id,COALESCE(json_extract(pr.fields,'$.supplier'),p.supplier,'') ORDER BY MAX(COALESCE(pr.created_at,p.created_at)) DESC,p.id DESC").all(date,from,to,owner,date) as Omit<MerchantVisit,'demo'>[];
+  return rows.map(v=>({...v,demo:Boolean((v as unknown as {demo:number}).demo)}));
+}
+export function listMerchants(owner: string, projectId: string | undefined, date?: string, favorite = false, range: RecordDateRange = {}): MerchantSummary[] {
+  const { clauses, values } = recordScope(owner, projectId, date, favorite, range);
+  return db().prepare("SELECT COALESCE(json_extract(pr.fields,'$.supplier'),'') supplier, COALESCE(json_extract(json_group_array(json_extract(pr.fields,'$.supplierContact') ORDER BY pr.created_at DESC,pr.id DESC) FILTER(WHERE COALESCE(json_extract(pr.fields,'$.supplierContact'),'')<>''),'$[0]'),'') supplierContact, COUNT(*) total, COUNT(*) FILTER(WHERE json_extract(pr.fields,'$.confirmed')=1) confirmed, COUNT(*) FILTER(WHERE COALESCE(json_extract(pr.fields,'$.confirmed'),0)=0) pending, COUNT(*) FILTER(WHERE json_extract(pr.fields,'$.unitPrice') IS NULL) missingPrice FROM products pr JOIN projects p ON pr.project_id=p.id WHERE " + clauses.join(' AND ') + " GROUP BY COALESCE(json_extract(pr.fields,'$.supplier'),'') ORDER BY MAX(pr.created_at) DESC,supplier").all(...values) as MerchantSummary[];
+}
+export function recordsForExport(owner: string, projectId: string | undefined, date?: string, favorite = false, supplier?: string, range: RecordDateRange = {}): Product[] {
+  const { clauses, values } = recordScope(owner, projectId, date, favorite, range);
+  if(supplier !== undefined){clauses.push("COALESCE(json_extract(pr.fields,'$.supplier'),'')=?");values.push(supplier);}
+  return (db().prepare('SELECT pr.*,p.name AS taskName,p.market AS taskMarket,p.date AS taskDate,p.demo FROM products pr JOIN projects p ON pr.project_id=p.id WHERE ' + clauses.join(' AND ') + ' ORDER BY pr.created_at DESC,pr.id DESC').all(...values) as unknown as ProductRow[]).map(hydrate);
+}
+export function recordDays(owner: string): { date: string; count: number }[] {
+  return db().prepare("SELECT date(pr.created_at,'+8 hours') AS date,COUNT(*) AS count FROM products pr JOIN projects p ON pr.project_id=p.id WHERE p.owner_id=? AND pr.deleted_at IS NULL GROUP BY date(pr.created_at,'+8 hours') ORDER BY date DESC").all(owner) as { date: string; count: number }[];
+}
+export function listProducts(owner: string, projectId: string): Product[] {
+  getProject(owner, projectId);
+  return (db().prepare("SELECT pr.*,p.demo FROM products pr JOIN projects p ON pr.project_id=p.id WHERE p.owner_id=? AND p.id=? AND pr.deleted_at IS NULL ORDER BY pr.created_at DESC,pr.id DESC").all(owner, projectId) as unknown as ProductRow[]).map(hydrate);
+}
+export function getProduct(owner: string, id: string): Product {
+  const row = db().prepare("SELECT pr.*,p.name AS taskName,p.demo FROM products pr JOIN projects p ON pr.project_id=p.id WHERE p.owner_id=? AND pr.id=?").get(owner, id) as ProductRow | undefined;
+  if (!row) notFound();
+  return hydrate(row);
+}
+function ownedMedia(owner: string, id: string): MediaRow {
+  const row = db().prepare("SELECT * FROM media WHERE owner_id=? AND id=?").get(owner, id) as MediaRow | undefined;
+  if (!row || (row.expires_at !== null && row.expires_at <= Date.now())) notFound();
+  return row;
+}
+export function readPhoto(owner: string, id: string): Buffer {
+  ownedMedia(owner, id);
+  const bytes = photoStorage.read(id);
+  if (!bytes) notFound();
+  return bytes;
+}
+export function stagePhoto(owner: string, upload: { name: string; bytes: Buffer }): Photo {
+  const count = db().prepare("SELECT count(*) AS n FROM media WHERE owner_id=? AND product_id IS NULL").get(owner) as { n: number };
+  if (count.n >= 100) throw new AppError("MEDIA_QUOTA", "待保存照片过多，请保存商品或等待过期照片清理", 429);
+  const id = randomUUID();
+  photoStorage.write(id, upload.bytes);
+  try {
+    db().prepare("INSERT INTO media (id,owner_id,name,expires_at) VALUES (?,?,?,?)").run(id, owner, upload.name, Date.now() + 24 * 60 * 60 * 1000);
+  } catch (error) { photoStorage.remove(id); throw error; }
+  return { id, name: upload.name, url: `/api/photos/${id}` };
+}
+export type SaveProductCommand = { requestKey: string; projectId: string; id?: string; version?: number; fields: ProductFields; photoIds: string[] };
+export function saveProduct(owner: string, command: SaveProductCommand): Product {
+  const { projectId, fields, id, version, photoIds, requestKey } = command;
+  return replay(owner, requestKey, { operation: "saveProduct", ...command }, () => {
+    getProject(owner, projectId);
+    const existing = id ? getProduct(owner, id) : undefined;
+    if(existing?.deletedAt)throw new AppError('PRODUCT_TRASHED','商品在回收站，请先恢复',409);
+    if (existing && existing.projectId !== projectId) notFound();
+    if (existing && existing.version !== version) conflict();
+    if (photoIds.length > 6 || new Set(photoIds).size !== photoIds.length) throw new AppError("INVALID_PHOTO", "每件商品最多6张不重复的照片");
+    for (const photoId of photoIds) {
+      const photo = ownedMedia(owner, photoId);
+      if (photo.product_id !== null && photo.product_id !== id) throw new AppError("INVALID_PHOTO", "照片归属无效");
+      if (!photoStorage.read(photoId)) throw new AppError("INVALID_PHOTO", "照片文件已丢失，请重新选择");
+    }
+    const productId = id || randomUUID(), now = new Date().toISOString();
+    if (existing) db().prepare("UPDATE products SET fields=?,version=version+1,updated_at=? WHERE id=? AND version=?").run(JSON.stringify(fields), now, productId, version!);
+    else db().prepare("INSERT INTO products (id,project_id,fields,created_at,updated_at,version) VALUES (?,?,?,?,?,1)").run(productId, projectId, JSON.stringify(fields), now, now);
+    db().prepare("UPDATE media SET product_id=NULL,expires_at=? WHERE product_id=?").run(Date.now() + 24 * 60 * 60 * 1000, productId);
+    for (const [position, photoId] of photoIds.entries()) db().prepare("UPDATE media SET product_id=?,position=?,expires_at=NULL WHERE id=? AND owner_id=?").run(productId, position, photoId, owner);
+    return getProduct(owner, productId);
+  });
+}
+export function deleteProduct(owner: string, id: string, version: number) {
+  return transaction(() => {
+    const product = getProduct(owner, id);
+    if (product.version !== version) conflict();
+    db().prepare("UPDATE media SET product_id=NULL,expires_at=? WHERE product_id=?").run(Date.now(), id);
+    db().prepare("DELETE FROM products WHERE id=? AND version=?").run(id, version);
+    return { deleted: true };
+  });
+}
+export function trashProduct(owner:string,id:string,version:number,restore=false):Product{
+  return transaction(()=>{
+    const current=getProduct(owner,id);
+    if(restore?!current.deletedAt:!!current.deletedAt)return current;
+    if(current.version!==version)conflict('商品已更新，请刷新后重试');
+    const now=new Date().toISOString();
+    db().prepare('UPDATE products SET deleted_at=?,version=version+1,updated_at=? WHERE id=? AND version=?').run(restore?null:now,now,id,version);
+    return getProduct(owner,id);
+  });
+}
+export function pageTrash(owner:string,cursor:string|undefined,limit:number,q=''){
+  const clauses=['p.owner_id=?','pr.deleted_at IS NOT NULL'],values:(string|number)[]=[owner];
+  if(q){const pattern='%'+q.toLowerCase().replace(/[\\%_]/g,c=>'\\'+c)+'%';clauses.push("(LOWER(json_extract(pr.fields,'$.name')) LIKE ? ESCAPE '\\' OR LOWER(json_extract(pr.fields,'$.supplier')) LIKE ? ESCAPE '\\')");values.push(pattern,pattern);}
+  const from='FROM products pr JOIN projects p ON p.id=pr.project_id WHERE '+clauses.join(' AND ');
+  const total=(db().prepare('SELECT COUNT(*) n '+from).get(...values) as {n:number}).n;
+  const boundary=cursor?resolveProductCursor(owner,'trash',cursor,from,values):null;
+  if(boundary){clauses.push('(pr.created_at<? OR (pr.created_at=? AND pr.id<?))');values.push(boundary.created_at,boundary.created_at,boundary.id);}
+  const rows=db().prepare('SELECT pr.*,p.name taskName,p.date taskDate,p.market taskMarket,p.demo FROM products pr JOIN projects p ON p.id=pr.project_id WHERE '+clauses.join(' AND ')+' ORDER BY pr.created_at DESC,pr.id DESC LIMIT ?').all(...values,limit+1) as unknown as ProductRow[];
+  const items=rows.slice(0,limit).map(hydrate);return{items,matchedCount:total,nextCursor:rows.length>limit?encodeProductCursor('trash',items[items.length-1].id):null};
+}
+export function setFavorite(owner: string, id: string, favorite: boolean, version: number): Product {
+  return transaction(() => {
+    const current = getProduct(owner, id);
+    if(current.deletedAt)throw new AppError('PRODUCT_TRASHED','商品在回收站，请先恢复',409);
+    if (current.favorite === favorite) return current;
+    if (current.version !== version) conflict('商品已更新，请刷新后重新收藏');
+    db().prepare("UPDATE products SET fields=json_set(fields,'$.favorite',json(?)),version=version+1,updated_at=? WHERE id=? AND version=?").run(JSON.stringify(favorite), new Date().toISOString(), id, version);
+    return getProduct(owner, id);
+  });
+}
+export function collectGarbage() {
+  const now = Date.now();
+  transaction(() => {
+    db().prepare("DELETE FROM media WHERE product_id IS NULL AND expires_at<=?").run(now);
+    db().prepare("DELETE FROM sessions WHERE expires_at<=?").run(now);
+  });
+  const referenced = new Set((db().prepare("SELECT id FROM media").all() as { id: string }[]).map(x => x.id));
+  return { filesRemoved: photoStorage.sweep(referenced, now - 60 * 60 * 1000) };
+}
+export interface MarketRepository {
+  listProjects: typeof listProjects;
+  getProject: typeof getProject;
+  createProject: typeof createProject;
+  listProducts: typeof listProducts;
+  listMerchantVisits: typeof listMerchantVisits;
+  listMerchants: typeof listMerchants;
+  recordsForExport: typeof recordsForExport;
+  pageProducts: typeof pageProducts;
+  projectSummary: typeof projectSummary;
+  getProduct: typeof getProduct;
+  saveProduct: typeof saveProduct;
+  deleteProduct: typeof deleteProduct;
+  trashProduct: typeof trashProduct;
+  pageTrash: typeof pageTrash;
+  stagePhoto: typeof stagePhoto;
+  readPhoto: typeof readPhoto;
+}
+export const repository: MarketRepository = { listProjects, getProject, createProject, listProducts, listMerchantVisits, listMerchants, recordsForExport, pageProducts, projectSummary, getProduct, saveProduct, deleteProduct, trashProduct, pageTrash, stagePhoto, readPhoto };

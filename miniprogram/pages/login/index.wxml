@@ -1,0 +1,10 @@
+<view class="login-page">
+  <view wx:if="{{checking}}" class="loading-line">正在连接…</view><block wx:else>
+    <view class="login-intro"><view class="login-title">登录</view><view class="login-caption">使用微信账号继续</view></view>
+    <view class="login-actions">
+      <view wx:if="{{error}}" class="login-error" aria-role="alert">{{error}}</view>
+      <button class="primary login-button" loading="{{loggingIn}}" disabled="{{loggingIn}}" bindtap="login" hover-class="button-pressed" hover-stay-time="80">{{loggingIn ? '登录中' : '微信登录'}}</button>
+      <button wx:if="{{devLogin}}" class="secondary dev-button" data-dev="yes" bindtap="login" disabled="{{loggingIn}}" hover-class="button-pressed" hover-stay-time="80">本机开发登录</button>
+    </view>
+  </block>
+</view>

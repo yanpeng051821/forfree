@@ -1,0 +1,33 @@
+# 白名单：仅容器构建所需的运行源码与依赖清单，其余一律不进入镜像。
+# 与 scripts/package-backend.cjs 的白名单保持一致。
+*
+!Dockerfile
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.build.json
+!src/
+!src/**
+# 以下均被上面的白名单排除，显式列出以防后续误加例外：
+# 本机数据库与媒体、采购原表
+.data
+.data/**
+# 环境变量与凭据
+.env
+.env.*
+# 文档、测试、客户端、迁移脚本
+docs
+docs/**
+tests
+tests/**
+miniprogram
+miniprogram/**
+cloudbase
+cloudbase/**
+# 本地构建产物
+node_modules
+node_modules/**
+dist
+dist/**
+.git
+.git/**

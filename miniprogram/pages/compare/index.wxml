@@ -1,0 +1,20 @@
+<view wx:if="{{authenticated}}" class="page compare-page">
+  <view wx:if="{{loading}}" class="loading-line">加载中…</view>
+  <view wx:if="{{error}}" class="error">{{error}}<button class="quiet small" bindtap="load" disabled="{{loading}}" hover-class="button-pressed" hover-stay-time="80">重试</button></view>
+  <block wx:if="{{items.length === 2}}">
+
+    <view class="comparison-head">
+      <view wx:for="{{items}}" wx:key="id" class="compare-product" data-id="{{item.id}}" bindtap="edit" hover-class="press" aria-role="button" aria-label="编辑{{item.name}}现场记录">
+        <image wx:if="{{item.cover}}" class="compare-image" src="{{item.cover}}" mode="aspectFit" /><view wx:else class="compare-image blank-image"><image class="icon" src="/assets/icons/image.png" /></view>
+        <view class="compare-name">{{item.name}}</view><view class="compare-supplier">{{item.supplier || '供应商待补'}}</view><view class="compare-currency">{{item.currency}}</view><view class="compare-price num">{{item.priceText}}</view><view class="compare-status"><text class="status-dot {{item.confirmed ? 'confirmed' : ''}}" /><text>{{item.confirmed ? '已核对' : '待核对'}}</text></view>
+      </view>
+    </view>
+    <view class="compare-hint">{{quoteHint}}</view>
+    <view class="compare-tabs"><button wx:for="{{groups}}" wx:key="key" class="compare-tab {{activeGroup === item.key ? 'selected' : ''}}" data-key="{{item.key}}" bindtap="selectGroup" aria-label="{{item.label}}{{activeGroup === item.key ? '，当前选项' : ''}}" hover-class="button-pressed" hover-stay-time="80">{{item.label}}</button></view>
+    <view class="row between difference-filter"><text>{{differenceCount}} 项不同</text><view class="row difference-switch"><text>只看差异</text><switch checked="{{onlyDifferences}}" bindchange="toggleDifferences" color="#28805a" aria-label="只看当前分组的不同项" /></view></view>
+    <view class="column-labels"><text>{{items[0].name}}</text><text>{{items[1].name}}</text></view>
+    <view class="comparison-table"><view wx:for="{{visibleRows}}" wx:key="key" class="comparison-row {{item.different ? 'different' : ''}}"><view class="compare-label row between"><text>{{item.label}}</text></view><view class="compare-values"><view wx:for="{{item.values}}" wx:for-item="value" wx:key="id" class="compare-value {{value.missing ? 'missing' : ''}}">{{value.text}}</view></view></view></view>
+    <view wx:if="{{!visibleRows.length}}" class="comparison-empty">当前分组没有不同项</view>
+  </block>
+  <view class="toolbar"><button class="primary" bindtap="back" hover-class="button-pressed" hover-stay-time="80">返回选品</button></view>
+</view>

@@ -1,0 +1,7 @@
+{
+  "navigationBarTitleText": "看货",
+  "enablePullDownRefresh": true,
+  "usingComponents": {
+    "date-rail": "/components/date-rail/index"
+  }
+}

@@ -1,0 +1,29 @@
+.date-rail{padding:0 0 20rpx}
+.rail-heading{display:flex;align-items:center;justify-content:space-between;height:68rpx;margin-bottom:10rpx}
+.month-button{display:flex;align-items:center;gap:14rpx;font-size:26rpx;font-weight:500;color:#34373d;height:68rpx;white-space:nowrap}
+.month-button .calendar-icon{width:27rpx;height:27rpx;opacity:.55}
+.rail-actions{display:flex;align-items:center;gap:4rpx}
+.all-toggle{padding:8rpx 15rpx;border-radius:22rpx;background:#eff0f2;color:#858b94;font-size:22rpx;white-space:nowrap}
+.all-toggle.active{background:#202226;color:#fff}
+.today-button{padding:12rpx 10rpx;font-size:23rpx;color:#8c9199;white-space:nowrap}
+.step-button{width:54rpx;height:62rpx;display:flex;align-items:center;justify-content:center}
+.step-button .step-icon{width:22rpx;height:22rpx;opacity:.65}
+.step-button .previous{transform:rotate(180deg)}
+.step-button.disabled{opacity:.25}
+.rail-viewport{position:relative;width:100%;height:144rpx;overflow:hidden}
+.rail-track{position:absolute;left:50%;top:0;width:420%;height:144rpx;display:flex;align-items:center;transition-property:transform;transition-timing-function:ease-out;will-change:transform}
+.rail-slot{flex:0 0 4.76190476%;width:4.76190476%;height:144rpx;display:flex;align-items:center;justify-content:center}
+.rail-day{box-sizing:border-box;width:108rpx;max-width:94%;height:128rpx;border-radius:24rpx;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5rpx;color:#8c929b;transform-origin:center center}
+.rail-day.center{transform:scale(1)}
+.rail-day.near{transform:scale(.84)}
+.rail-day.far{transform:scale(.66);color:#a3a8af}
+.day-week{font-size:22rpx;color:#969da6;line-height:1.3}
+.day-number{font-size:42rpx;font-weight:500;line-height:1.2;font-variant-numeric:tabular-nums}
+.record-dot{width:7rpx;height:7rpx;background:#8d9693;border-radius:50%;margin-top:4rpx}
+.record-dot.ghost{opacity:0}
+.rail-day.selected{background:#f5f5f6;color:#202226}
+.selected .day-number{color:#202226}
+.selected .day-week{color:#858c95}
+.selected .record-dot{background:#8d9693}
+.rail-day.disabled{opacity:.38}
+.rail-day:not(.disabled):active{opacity:.75}

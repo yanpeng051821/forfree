@@ -1,0 +1,1 @@
+const kit=require('../../utils/page-kit');Page(kit.protectedPage({data:{},onShow(){kit.requireLogin(this);}}));

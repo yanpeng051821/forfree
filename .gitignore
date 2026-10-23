@@ -1,4 +1,6 @@
 node_modules/
+dist/
+project.private.config.json
 .next/
 .data/
 .env*
@@ -6,3 +8,12 @@ node_modules/
 test-results/
 playwright-report/
 *.tsbuildinfo
+
+# Local procurement workbooks and private verification artifacts.
+*.xlsx
+*.xls
+*.xlsm
+docs/demo/
+docs/screenshots/*.png
+docs/screenshots/*.jpg
+docs/screenshots/*.jpeg

@@ -1,0 +1,22 @@
+<view class="date-rail">
+  <view class="rail-heading">
+    <picker mode="date" value="{{calendarDate}}" end="{{limitDate}}" bindchange="calendar">
+      <view class="month-button" aria-role="button" aria-label="选择任意日期"><text>{{monthLabel}}</text><image class="calendar-icon" src="/assets/icons/calendar.png" /></view>
+    </picker>
+    <view class="rail-actions">
+      <view wx:if="{{allowAll}}" class="all-toggle {{!activeDate ? 'active' : ''}}" bindtap="toggleAll" aria-role="button" aria-label="{{activeDate ? '查看全部日期的任务' : '查看居中日期的任务'}}" aria-pressed="{{!activeDate}}">全部</view>
+      <view wx:if="{{showToday && anchor !== todayDate && todayDate <= limitDate}}" class="today-button" bindtap="today">今天</view>
+      <view class="step-button {{atMin ? 'disabled' : ''}}" bindtap="previous" aria-role="button" aria-label="前一天" aria-disabled="{{atMin}}"><image class="step-icon previous" src="/assets/icons/chevron.png" /></view>
+      <view class="step-button {{atMax ? 'disabled' : ''}}" bindtap="next" aria-role="button" aria-label="后一天" aria-disabled="{{atMax}}"><image class="step-icon" src="/assets/icons/chevron.png" /></view>
+    </view>
+  </view>
+  <view class="rail-viewport" bindtouchstart="touchStart" bindtouchmove="touchMove" bindtouchend="touchEnd" bindtouchcancel="touchCancel">
+    <view class="rail-track" style="transform: translateX(-50%) translateX({{dragOffset}}px); transition-duration: {{snapDuration}}ms;">
+      <view wx:for="{{days}}" wx:key="id" id="{{item.id}}" class="rail-slot" aria-hidden="{{!item.date}}">
+        <view class="rail-day {{item.distance === 0 ? 'center' : item.distance === 1 ? 'near' : 'far'}} {{activeDate === item.date && item.date ? 'selected' : ''}} {{item.disabled ? 'disabled' : ''}}" data-date="{{item.date}}" bindtap="choose" aria-role="button" aria-disabled="{{item.disabled}}" aria-label="{{item.date}}{{item.disabled ? '，不可选择' : ''}}{{item.hasRecords ? '，有记录' : ''}}">
+          <text class="day-week">{{item.week}}</text><text class="day-number">{{item.day}}</text><view class="record-dot {{item.hasRecords ? '' : 'ghost'}}" />
+        </view>
+      </view>
+    </view>
+  </view>
+</view>

@@ -1,0 +1,53 @@
+{
+  "pages": [
+    "pages/login/index",
+    "pages/projects/index",
+    "pages/products/index",
+    "pages/me/index",
+    "pages/editor/index",
+    "pages/compare/index",
+    "pages/export/index",
+    "pages/favorites/index",
+    "pages/trash/index",
+    "pages/procurement/index",
+    "pages/table-settings/index",
+    "pages/profile/index",
+    "pages/drafts/index",
+    "pages/help/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "货记",
+    "navigationBarBackgroundColor": "#fafafa",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#fafafa"
+  },
+  "tabBar": {
+    "color": "#a1a6ad",
+    "selectedColor": "#202226",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/projects/index",
+        "text": "看货",
+        "iconPath": "assets/icons/folder.png",
+        "selectedIconPath": "assets/icons/folder-dark.png"
+      },
+      {
+        "pagePath": "pages/products/index",
+        "text": "商品",
+        "iconPath": "assets/icons/shop.png",
+        "selectedIconPath": "assets/icons/shop-dark.png"
+      },
+      {
+        "pagePath": "pages/me/index",
+        "text": "我的",
+        "iconPath": "assets/icons/user.png",
+        "selectedIconPath": "assets/icons/user-dark.png"
+      }
+    ]
+  },
+  "style": "v2",
+  "lazyCodeLoading": "requiredComponents",
+  "sitemapLocation": "sitemap.json"
+}

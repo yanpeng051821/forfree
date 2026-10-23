@@ -1,0 +1,4 @@
+@import "../products/index.wxss";
+
+.products-page{padding-bottom:calc(110rpx + env(safe-area-inset-bottom))}.workspace{margin-bottom:18rpx}
+.products-page.has-undo{padding-bottom:calc(230rpx + env(safe-area-inset-bottom))}.products-page.is-managing.has-undo{padding-bottom:calc(280rpx + env(safe-area-inset-bottom))}

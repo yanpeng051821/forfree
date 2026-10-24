@@ -108,7 +108,7 @@ check('current report/handoffs and mirrors are reproducible',()=>{
 });
 check('implementation and backup diff from historical base stays within authorized files',()=>{
   execFileSync('git',['merge-base','--is-ancestor','9d07bc2','HEAD'],{cwd:repo});
-  const changed = execFileSync('git',['diff','9d07bc2','--name-only'],{cwd:repo,encoding:'utf8'}).trim().split('\n').filter(Boolean);
+  const changed = execFileSync('git',['diff','9d07bc2','--name-only','-z'],{cwd:repo,encoding:'utf8'}).split('\0').filter(Boolean);
   const backend=new Set(['src/lib/quotation-export.ts','src/server/app.ts','src/server/product-organize.ts']);
   const backup=new Set(['.gitignore','scripts/sample-product-export.ts']);
   assert.ok(changed.every(file=>file.startsWith('miniprogram/') || file.startsWith('tests/') || file.startsWith('docs/') || backend.has(file) || backup.has(file)),'unexpected backend/schema/deployment-file change');

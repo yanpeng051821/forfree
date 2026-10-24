@@ -1,3 +1,4 @@
+import { effective } from "./excel-value";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -42,7 +43,7 @@ function quotationRows(workbook: import('exceljs').Workbook, images = true, appe
       assert.ok(row.getCell(descriptionColumn).text);
       return { sheet, row, columns, description: row.getCell(descriptionColumn).text, value: (label: string) => {
         const column = columns.indexOf(label); assert.ok(column > 0, 'missing column ' + label);
-        return row.getCell(column).value;
+        return effective(row.getCell(column));
       } };
     });
   });
@@ -401,16 +402,16 @@ test('新增采购字段兼容旧记录，纯数据与仅确认导出内容正�
     assert.equal(value(referenceLabel('unitPrice')), 12.5);
     assert.equal(value(referenceLabel('quantity')), null); assert.equal(value(referenceLabel('amount')), null);
     assert.equal(value(referenceLabel('cartonCbm')), 0.042); assert.equal(value(referenceLabel('cbm')), null);
-    assert.ok(!columns.includes('处理决定')); assert.ok(!columns.includes('大货交期(天)')); assert.ok(!columns.includes('现场记录报价条款'));
+    assert.ok(!columns.includes('资料核对')); assert.ok(!columns.includes('大货交期(天)')); assert.ok(!columns.includes('现场记录报价条款'));
     assert.match(workbook.getWorksheet('说明')!.getCell('B6').text, /仅导出已人工核对/);
     const template = defaultProcurementTemplate();
     template.columns.find(column => column.key === 'decision')!.enabled = true;
     const explicit = await service.export(account.user.id, project.id, { template, scope: 'confirmed', images: false, businessFields: ['name', 'leadTimeDays', 'tradeTerms'] });
     assert.deepEqual(explicit.metadata!.columns.map(column => column.key), [...template.columns.filter(column => column.enabled && column.key !== 'image').map(column => column.key), 'business:name', 'business:leadTimeDays', 'business:tradeTerms']);
     const explicitWorkbook = new ExcelJS.Workbook(); await explicitWorkbook.xlsx.load(explicit.bytes as never);
-    const explicitRecords = quotationRows(explicitWorkbook, false, ['处理决定', '商品名称', '大货交期(天)', '现场记录报价条款']);
+    const explicitRecords = quotationRows(explicitWorkbook, false, ['资料核对', '商品名称', '大货交期(天)', '现场记录报价条款']);
     assert.equal(explicitRecords.length, 1); assert.equal(explicitRecords[0].value('商品名称'), '陶瓷杯');
-    assert.equal(explicitRecords[0].value('处理决定'), '已核对'); assert.equal(explicitRecords[0].value(referenceLabel('cartonCbm')), 0.042);
+    assert.equal(explicitRecords[0].value('资料核对'), '已核对'); assert.equal(explicitRecords[0].value(referenceLabel('cartonCbm')), 0.042);
     assert.equal(explicitRecords[0].value('大货交期(天)'), 18); assert.equal(explicitRecords[0].value('现场记录报价条款'), 'FOB 宁波');
     assert.equal((await app.inject({ method: 'GET', url: `/api/export?projectId=${project.id}&scope=selected`, headers: headers(account.token) })).statusCode, 400);
   } finally { await app.close(); }
@@ -488,8 +489,8 @@ test('按中国日跨任务回顾：午夜边界、修改保留日期、分页�
     const template = defaultProcurementTemplate(); template.columns.find(column => column.key === 'decision')!.enabled = true;
     const explicit = await service.export(a.user.id, undefined, { template, date: '2026-10-16', images: false, businessFields: ['project', 'date', 'recordDate'], audience: 'internal' });
     const explicitWorkbook = new ExcelJS.Workbook(); await explicitWorkbook.xlsx.load(explicit.bytes as never);
-    const dated = quotationRows(explicitWorkbook, false, ['处理决定', '看货任务', '任务日期', '记录日期']);
-    assert.deepEqual(dated.map(record => record.value('处理决定')), ['待核对', '已核对']);
+    const dated = quotationRows(explicitWorkbook, false, ['资料核对', '看货任务', '任务日期', '记录日期']);
+    assert.deepEqual(dated.map(record => record.value('资料核对')), ['待核对', '已核对']);
     assert.deepEqual(dated.map(record => record.value('看货任务')), ['客户乙', '客户甲']);
     assert.deepEqual(dated.map(record => record.value('任务日期')), ['2026-10-01', '2026-10-01']);
     assert.deepEqual(dated.map(record => record.value('记录日期')), ['2026-10-16', '2026-10-16']);

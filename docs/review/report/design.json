@@ -1,0 +1,923 @@
+{
+  "meta": {
+    "name": "货记 · 个人商品记录与整理",
+    "version": "1.3",
+    "date": "2026-10-24",
+    "basedOn": "用户个人商品记录场景 + 本机参考Excel结构 + 9d07bc2代码复核；以SOLUTION.md为准",
+    "status": "四批本地实现与回归完成；桌面/真实容器/微信真机待验；不含部署授权",
+    "scope": "采购员自己记录、整理、比较各商家的商品数据，输出参考样式Excel",
+    "excluded": [
+      "采购单tab",
+      "批次实体",
+      "下单流程",
+      "计入/取消/后补状态",
+      "发送状态",
+      "商户确认",
+      "客户CRM",
+      "客户报价/回选",
+      "付款对账",
+      "收货核对",
+      "团队共享",
+      "柜容预算",
+      "独立Web工作台"
+    ],
+    "viewport": {
+      "widths": [
+        320,
+        375,
+        414
+      ],
+      "height": 812,
+      "rpxPerPxAt375": 2
+    },
+    "drawingNotes": [
+      "样例商品、店名、价格全部虚构；不展示任何联系方式数字",
+      "保留系统相机，不画页内取景器或录音功能",
+      "示意图不是运行中的小程序，按钮仅作导航或布局示意",
+      "八张图是现有页面/弹层/范围的状态，不新增八条路由；补充资料复用编辑页",
+      "商户/商品两个tab；右上角进入普通设置页；辅助页面不画tabBar"
+    ],
+    "changes": [
+      "最终商户/商品两tab、右上角设置；四批本地实现；不建立下单/批次/客户/团队业务",
+      "使用实际ProductFields，不以概念伪字段作为数据库字段",
+      "取消独立整理队列及逐字段AI来源系统，复用编辑页人工补充",
+      "首期导出日期/商户/all或confirmed，不实现q/status/ids导出",
+      "参考带图商品表十一列；派生公式+缓存已实现，实际合成xlsx验证",
+      "容器v2二进制640KiB分段；保护缓存60MiB/导出7天，需真机验收"
+    ],
+    "authority": "SOLUTION.md",
+    "deferred": [
+      "独立整理队列",
+      "逐字段AI来源模型",
+      "搜索结果/所选导出",
+      "独立商户档案",
+      "自动合并",
+      "照片裁剪旋转",
+      "多件离线上传队列"
+    ]
+  },
+  "principles": [
+    "记录一次，复看补充，直接导出；减少手机到Excel的重复录入",
+    "明确当前商户，连续录入不串店；缺少商户时先选店",
+    "未知留空，不让AI根据外观猜价格、数量、体积",
+    "资料检查不是采购决定；收藏是个人偏好，不代表要买",
+    "保留记录日期和历史版本，不自动合并同货号记录",
+    "参考Excel只指导字段与版式，不指导扩张业务流程",
+    "复用现有个人数据、商户入口和公司模板，不为小功能建完整系统"
+  ],
+  "tabs": [
+    {
+      "id": "field",
+      "name": "商户",
+      "purpose": "现场按日期找商户并记录",
+      "implementation": "pages/projects/index"
+    },
+    {
+      "id": "library",
+      "name": "商品",
+      "purpose": "查找、复看、比较和导出",
+      "implementation": "pages/products/index"
+    }
+  ],
+  "entities": [
+    {
+      "name": "商品记录",
+      "id": "Product.id",
+      "source": "forfree/src/lib/types.ts",
+      "fields": [
+        "id",
+        "projectId",
+        "version",
+        "name",
+        "sku",
+        "supplier",
+        "supplierContact",
+        "colors",
+        "material",
+        "dimensions",
+        "weightG",
+        "unitPrice",
+        "currency",
+        "moq",
+        "cartonQty",
+        "cartons",
+        "quantity",
+        "barcode",
+        "exportRemarks",
+        "custom",
+        "cartonDimensions",
+        "cartonCbm",
+        "leadTimeDays",
+        "tradeTerms",
+        "description",
+        "notes",
+        "confirmed",
+        "favorite",
+        "rating",
+        "evaluation",
+        "photos",
+        "createdAt",
+        "updatedAt",
+        "deletedAt",
+        "organizeState",
+        "organizeJobId",
+        "organizeError"
+      ],
+      "computed": [
+        "recordDate（createdAt北京时间日期，非存储字段）",
+        "derivedQuantity",
+        "amount",
+        "cbm",
+        "missingFlags"
+      ],
+      "rules": [
+        "不新增商品字段，数值null未知；cartonQty已知为正整数",
+        "quantity显式值含0优先；否则cartons×cartonQty",
+        "修改不变createdAt；同货号不同记录不合并",
+        "confirmed是资料人工检查，不是购买决定"
+      ]
+    },
+    {
+      "name": "商户到访容器（复用Project）",
+      "id": "Project.id",
+      "source": "forfree/src/lib/types.ts",
+      "fields": [
+        "id",
+        "name",
+        "supplier",
+        "supplierContact",
+        "market",
+        "date",
+        "demo",
+        "createdAt"
+      ],
+      "rules": [
+        "复用现有Project，不新增商户ID/booth/contact表",
+        "名字或摊位仍为supplier文字，market保留市场/位置含义",
+        "跨日sheet按精确supplier分组；旧重名不自动改写"
+      ]
+    },
+    {
+      "name": "Excel格式（现有模板）",
+      "id": "owner模板与version",
+      "source": "forfree/src/lib/procurement-template.ts",
+      "fields": [
+        "version",
+        "company",
+        "companyEnglish",
+        "address",
+        "contact",
+        "paymentTerms",
+        "shippingMark",
+        "packingRequirements",
+        "documentTitle",
+        "layout",
+        "columns",
+        "customFields"
+      ],
+      "rules": [
+        "新默认商品资料表/PRODUCT RECORD，已保存模板不覆盖",
+        "带图默认A:K十一列；无图仅省图片列",
+        "模板原文只预览与导出，不解析付款或唛头流程"
+      ]
+    }
+  ],
+  "stateAxes": [
+    {
+      "name": "保存",
+      "owner": "系统",
+      "values": [
+        "本机草稿",
+        "正在保存",
+        "保存结果待确认",
+        "已保存",
+        "重试失败"
+      ],
+      "rules": [
+        "有稿默认恢复，查看云版本只读",
+        "本次快照成功才清相应草稿，受引用照片保护",
+        "云端确认才继续新品，幂等先查回执"
+      ]
+    },
+    {
+      "name": "资料",
+      "owner": "系统缺项+人工confirmed",
+      "values": [
+        "缺价格",
+        "待核对",
+        "资料已核对",
+        "整理中",
+        "已整理，待核对",
+        "整理失败"
+      ],
+      "rules": [
+        "缺项不拦保存/导出，核对不是完整度",
+        "不新建逐字段AI来源或AI筛选",
+        "AI只补空，不自动换商户/币种；固定事实字段变动撤销confirmed"
+      ]
+    }
+  ],
+  "screens": [
+    {
+      "id": "field-today",
+      "name": "商户 · 今天",
+      "tab": "field",
+      "purpose": "找到当前商户，继续记录并发现未保存内容",
+      "layout": [
+        "日期一行",
+        "商户到访列表",
+        "问题时显示草稿/上传提示",
+        "底部选择商户或进店记录"
+      ],
+      "keyControls": [
+        "选择日期",
+        "商户行进商品",
+        "相机直达该店录入",
+        "恢复草稿"
+      ],
+      "states": [
+        "空日可新增商户",
+        "离线可查看本机草稿，正式新增的离线能力按实现验证",
+        "历史日期新录入提示实际保存今天"
+      ],
+      "sampleData": {
+        "date": "2026-10-24",
+        "weekday": "周六",
+        "shops": 3,
+        "products": 12
+      },
+      "implementation": "pages/projects/index"
+    },
+    {
+      "id": "shop-entry",
+      "name": "选择商户",
+      "tab": "field",
+      "purpose": "复用已有店，避免重复输入和串店",
+      "layout": [
+        "现有商户选择",
+        "商户名称 / 摊位标识一个输入",
+        "市场/位置与联系方式选填",
+        "新增并进入记录"
+      ],
+      "keyControls": [
+        "复用已有商户",
+        "新增商户",
+        "取消返回"
+      ],
+      "states": [
+        "新品有明确当前商户",
+        "重名以可识别文字区分，不自动迁移旧数据",
+        "先不做全历史联想搜索"
+      ],
+      "sampleData": {
+        "shop": "示例百货甲",
+        "booth": "虚构摊位 A-01"
+      },
+      "implementation": "pages/projects/index创建弹层，不新增路由"
+    },
+    {
+      "id": "merchant-profile",
+      "name": "商户商品",
+      "tab": "field",
+      "purpose": "在这家店复看资料、补问和继续拍照",
+      "layout": [
+        "店名与摊位",
+        "日期范围",
+        "商品列表",
+        "继续记录/导出"
+      ],
+      "keyControls": [
+        "查看该商户日期范围",
+        "继续记录",
+        "导出该店"
+      ],
+      "states": [
+        "空商户可继续记录",
+        "旧同名可能合并时提示",
+        "不增加交易历史或订单分段"
+      ],
+      "sampleData": {
+        "shop": "示例百货甲",
+        "count": 4
+      },
+      "implementation": "pages/products/index商户范围"
+    },
+    {
+      "id": "field-capture",
+      "name": "记录商品",
+      "tab": "field",
+      "purpose": "少量核心字段现场写下，其余以后补",
+      "layout": [
+        "当前商户",
+        "照片/系统相机",
+        "现场描述和整理",
+        "名称/单价+币种/货号/颜色",
+        "商品说明/表格备注",
+        "规格与包装折叠",
+        "低频扩展/商户/个人评价折叠",
+        "保存返回+保存并继续"
+      ],
+      "keyControls": [
+        "拍照",
+        "从相册补图（次要）",
+        "文字整理",
+        "补规格",
+        "保存返回",
+        "保存并继续"
+      ],
+      "states": [
+        "有商品信息名称可后补，空记录不可存",
+        "云端确认成功才继续新品",
+        "有同ID草稿默认恢复，查看云版本只读",
+        "关键事实变更才撤销核对",
+        "AI只补空，商户/币种不自动换"
+      ],
+      "sampleData": {
+        "shop": "示例百货甲",
+        "name": "陶瓷杯",
+        "sku": "DEMO-A01",
+        "unitPrice": 6.8,
+        "currency": "CNY",
+        "cartonQty": 48,
+        "cartonDimensions": "50 × 40 × 30 cm",
+        "cartonCbm": 0.06,
+        "cartons": null,
+        "quantity": null,
+        "moq": null
+      },
+      "implementation": "pages/editor/index新品状态"
+    },
+    {
+      "id": "library-list",
+      "name": "商品 · 整理",
+      "tab": "library",
+      "purpose": "跨日期找货、检查资料和少翻列表",
+      "layout": [
+        "单日/日期范围与商户",
+        "搜索+all/pending/confirmed/missingPrice",
+        "紧凑/大图切换（首次大图）",
+        "点商品复用编辑页补资料"
+      ],
+      "keyControls": [
+        "编辑记录补资料",
+        "选两件比较",
+        "导出Excel（日期/商户范围）",
+        "收藏",
+        "管理已有记录"
+      ],
+      "states": [
+        "返回保留已加载页/锚点/筛选",
+        "搜索和缺项不带入导出，显式说明",
+        "选择已加载最多50件用于现有管理，不是所选导出",
+        "日期切换清除无关比较选择"
+      ],
+      "sampleData": {
+        "dateFrom": "2026-10-19",
+        "dateTo": "2026-10-24",
+        "merchants": 3,
+        "products": 12
+      },
+      "implementation": "pages/products/index日期/日期范围"
+    },
+    {
+      "id": "review-queue",
+      "name": "补充资料（编辑页状态）",
+      "tab": "library",
+      "purpose": "从列表复看、补充当前商品，返回原位置",
+      "layout": [
+        "当前商户/已保存记录日",
+        "照片",
+        "现有人工字段",
+        "AI补空结果提示（不伪造逐字段来源）",
+        "规格与包装",
+        "资料已核对辅助标记"
+      ],
+      "keyControls": [
+        "补充字段",
+        "AI整理（可选）",
+        "保存修改",
+        "返回保留草稿"
+      ],
+      "states": [
+        "缺项可保存和导出",
+        "不新增候选建议采纳状态",
+        "没有保存并下一件整理按钮",
+        "编辑后回第40件仍在原位置"
+      ],
+      "sampleData": {
+        "name": "彩色中性笔",
+        "sku": "DEMO-B01",
+        "cartonQty": null,
+        "unitPrice": 1.2,
+        "currency": "CNY",
+        "confirmed": false
+      },
+      "implementation": "pages/editor/index已有商品状态，不新增整理队列路由"
+    },
+    {
+      "id": "compare",
+      "name": "比较商品",
+      "tab": "library",
+      "purpose": "比较自己的记录，不增加候选组实体",
+      "layout": [
+        "两件商品",
+        "相同口径价格",
+        "每箱数/箱规/MOQ",
+        "差异高亮"
+      ],
+      "keyControls": [
+        "换比较对象",
+        "查看商品",
+        "返回原列表"
+      ],
+      "states": [
+        "现有差异筛选回归，不重复重建",
+        "不同币种或口径未知不推荐更优",
+        "比较结束恢复列表，不残留选择/管理模式"
+      ],
+      "sampleData": {
+        "count": 2
+      },
+      "implementation": "pages/compare/index"
+    },
+    {
+      "id": "export-picker",
+      "name": "导出 Excel",
+      "tab": "library",
+      "purpose": "范围清楚，输出参考样式商品表",
+      "layout": [
+        "单日/日期范围",
+        "全部或一个商户",
+        "全部或仅已核对",
+        "带全部图/无图，内部记录次要",
+        "实际商品数/商户数/缺项数",
+        "十一列参考预览（手机可横向看）",
+        "模板原文折叠",
+        "生成时间和打开/分享"
+      ],
+      "keyControls": [
+        "生成Excel",
+        "打开已生成文件",
+        "分享文件",
+        "Excel格式（次要）"
+      ],
+      "states": [
+        "缺项可导出；草稿/回收站排除",
+        "搜索/pending/missingPrice不带入文件且显式说明",
+        "同范围返回保留生成文件，文件为当时快照",
+        "变范围/模板/已知商品修改使旧文件失效",
+        "文件丢失/坏块不可冒称成功",
+        "0件不生成"
+      ],
+      "sampleData": {
+        "dateFrom": "2026-10-19",
+        "dateTo": "2026-10-24",
+        "merchants": 3,
+        "products": 12,
+        "images": "all",
+        "scope": "all",
+        "audience": "商品表",
+        "missingPrice": 1
+      },
+      "implementation": "pages/export/index"
+    }
+  ],
+  "tokens": {
+    "color": {
+      "bg": {
+        "hex": "#f5f7f5",
+        "usage": "页面与导航栏统一底色"
+      },
+      "card": {
+        "hex": "#ffffff",
+        "usage": "卡片、列表、底栏；与 bg 仅 1.08:1，卡片需 1rpx line 描边"
+      },
+      "fill": {
+        "hex": "#f1f5f2",
+        "usage": "输入框、芯片底"
+      },
+      "line": {
+        "hex": "#e3e9e5",
+        "usage": "分隔线、卡片描边"
+      },
+      "t1": {
+        "hex": "#1f2a24",
+        "usage": "标题、品名、价格",
+        "contrastOnCard": "14.84:1",
+        "contrastOnBg": "13.79:1"
+      },
+      "t2": {
+        "hex": "#4a574f",
+        "usage": "次要数据：货号、起订量、每箱",
+        "contrastOnCard": "7.59:1",
+        "contrastOnBg": "7.05:1"
+      },
+      "t3": {
+        "hex": "#5f6c64",
+        "usage": "说明、字段名、日期",
+        "contrastOnCard": "5.50:1",
+        "contrastOnBg": "5.11:1"
+      },
+      "placeholder": {
+        "hex": "#87928b",
+        "usage": "仅占位符，不承载数据",
+        "contrastOnCard": "3.22:1"
+      },
+      "brand": {
+        "hex": "#263b32",
+        "usage": "主按钮和选中态",
+        "whiteTextContrast": "11.97:1"
+      },
+      "brandWeak": {
+        "hex": "#e3ebe5",
+        "usage": "选中底、计入徽标底",
+        "brandTextContrast": "9.85:1"
+      },
+      "ok": {
+        "hex": "#1f7a4d",
+        "weak": "#e8f3ec",
+        "usage": "资料人工检查已完成",
+        "contrastOnWeak": "4.67:1"
+      },
+      "warn": {
+        "hex": "#8a5a14",
+        "weak": "#fdf3e3",
+        "usage": "缺项、离线、保存结果未知",
+        "contrastOnWeak": "5.38:1"
+      },
+      "info": {
+        "hex": "#2f5d8a",
+        "weak": "#e9f0f7",
+        "usage": "本次整理提示、上传中，不伪造逐字段来源",
+        "contrastOnWeak": "5.98:1"
+      },
+      "danger": {
+        "hex": "#b3261e",
+        "weak": "#fdecea",
+        "usage": "保存失败、删除",
+        "contrastOnWeak": "5.72:1"
+      },
+      "neutral": {
+        "hex": "#4a574f",
+        "weak": "#eef1ef",
+        "usage": "本机草稿"
+      },
+      "tabInactive": {
+        "hex": "#66706a",
+        "usage": "tabBar 未选中",
+        "contrastOnCard": "5.13:1"
+      },
+      "tabActive": {
+        "hex": "#263b32",
+        "usage": "tabBar 选中"
+      }
+    },
+    "typography": {
+      "scale": [
+        {
+          "token": "caption",
+          "rpx": 24,
+          "px375": 12,
+          "lineHeight": 1.4,
+          "usage": "最小字号：标签、计数、单位、辅助说明"
+        },
+        {
+          "token": "body",
+          "rpx": 28,
+          "px375": 14,
+          "lineHeight": 1.5,
+          "usage": "正文、次要数据（货号、起订量、每箱用 26–28rpx t2）"
+        },
+        {
+          "token": "list",
+          "rpx": 30,
+          "px375": 15,
+          "lineHeight": 1.4,
+          "usage": "列表主文字、输入框"
+        },
+        {
+          "token": "emphasis",
+          "rpx": 34,
+          "px375": 17,
+          "lineHeight": 1.3,
+          "usage": "价格、卡片标题、按钮文字"
+        },
+        {
+          "token": "title",
+          "rpx": 44,
+          "px375": 22,
+          "lineHeight": 1.25,
+          "usage": "页面标题、大数字"
+        },
+        {
+          "token": "brand",
+          "rpx": 56,
+          "px375": 28,
+          "lineHeight": 1.2,
+          "usage": "仅登录页产品名"
+        }
+      ],
+      "weights": [
+        400,
+        500,
+        600
+      ],
+      "numerals": "价格、摊位号、数量、体积用 tabular-nums 等宽数字；金额千分位、两位小数",
+      "dates": "10月24日 周六；筛选及导出按北京时间首次云端保存日，修改不改变记录日",
+      "letterSpacing": 0
+    },
+    "spacing": {
+      "base_rpx": 8,
+      "scale_rpx": [
+        8,
+        16,
+        24,
+        32,
+        48,
+        64
+      ],
+      "pagePadding_rpx": 32,
+      "cardPadding_rpx": 24,
+      "listRowMinHeight_rpx": 144,
+      "sectionGap_rpx": 32
+    },
+    "radius": {
+      "sm_rpx": 12,
+      "md_rpx": 16,
+      "pill_rpx": 999,
+      "usage": {
+        "sm": "标签、输入框",
+        "md": "重复商品卡与弹层",
+        "pill": "必要的圆形图标热区"
+      }
+    },
+    "touch": {
+      "minHit_rpx": 88,
+      "bottomBarButtonHeight_rpx": 96,
+      "chipVisualHeight_rpx": 64,
+      "chipExtraHitPadding_rpx": 12,
+      "checkboxVisual_rpx": 44,
+      "rule": "交互热区至少88rpx；截图中展示的按钮也遵守44px热区，不以小字标签承担主操作"
+    },
+    "elevation": {
+      "card": "仅重复项目用轻描边；页面分区不套卡片",
+      "sheet": "0 -8rpx 24rpx rgba(31,42,36,0.12)",
+      "bottomBar": "顶部 1rpx line 描边，无阴影",
+      "rule": "不在内容上悬浮按钮（底部操作栏固定，内容区留出底部空白）"
+    },
+    "motion": {
+      "saveFeedback": "本机持久保存显示草稿；云端成功才清表单继续新品",
+      "undo": "删除照片后可撤销；永久删除另行确认，不做采购行取消",
+      "listUpdate": "只更新变化的行，不整页闪烁"
+    },
+    "statusLabels": {
+      "shapeRules": {
+        "data": "文字标签，不能与多选勾混用",
+        "record": "编辑页或列表的保存提示"
+      },
+      "map": [
+        {
+          "axis": "资料",
+          "label": "缺价格",
+          "fg": "#8a5a14",
+          "bg": "#fdf3e3"
+        },
+        {
+          "axis": "资料",
+          "label": "待核对",
+          "fg": "#4a574f",
+          "bg": "#eef1ef"
+        },
+        {
+          "axis": "资料",
+          "label": "资料已核对",
+          "fg": "#1f7a4d",
+          "bg": "#e8f3ec"
+        },
+        {
+          "axis": "资料",
+          "label": "已整理，待核对",
+          "fg": "#2f5d8a",
+          "bg": "#e9f0f7"
+        },
+        {
+          "axis": "保存",
+          "label": "本机草稿",
+          "fg": "#4a574f",
+          "bg": "#eef1ef"
+        },
+        {
+          "axis": "保存",
+          "label": "保存结果待确认",
+          "fg": "#8a5a14",
+          "bg": "#fdf3e3"
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "name": "商品行",
+      "rules": [
+        "名称/价格/货号清晰，现有大图首次默认，紧凑可记忆",
+        "收藏与管理/比较选择互斥",
+        "只有视图模型进setData"
+      ]
+    },
+    {
+      "name": "保存栏",
+      "rules": [
+        "新品保存返回/保存并继续有文字主次",
+        "编辑已保存商品仅保存修改/返回",
+        "云确认才清草稿；键盘可见需真机验收"
+      ]
+    },
+    {
+      "name": "日期范围",
+      "rules": [
+        "含首尾、createdAt北京时间日期",
+        "列表与导出共用日期/商户，搜索/缺项不带入需提示"
+      ]
+    },
+    {
+      "name": "Excel预览",
+      "rules": [
+        "实际十一列，手机可横向看；示意五列是局部缩略",
+        "显示实际数量/缺项/模板原文",
+        "真实xlsx公式/多图/桌面和手机打开为验收"
+      ]
+    }
+  ],
+  "glossary": [
+    {
+      "term": "商品表",
+      "meaning": "各商家选购或记录的商品Excel，不表示已下单"
+    },
+    {
+      "term": "整理资料",
+      "meaning": "采购员自己复看、补全和确认字段，不是审批"
+    },
+    {
+      "term": "已核对",
+      "meaning": "现有资料人工检查标记，不代表采购决定"
+    },
+    {
+      "term": "到访",
+      "meaning": "某日某商户的记录容器，复用project"
+    },
+    {
+      "term": "取消备注",
+      "meaning": "原始记录文字，不自动删行或排除导出"
+    }
+  ],
+  "excel": {
+    "defaultTitle": "商品资料表 / PRODUCT RECORD",
+    "defaultScope": "all",
+    "defaultAudience": "selection",
+    "defaultImages": true,
+    "optionalDecisionLabel": "资料核对（仅新默认修改，旧模板不覆盖）",
+    "columns": [
+      {
+        "key": "sku",
+        "field": "sku"
+      },
+      {
+        "key": "cartons",
+        "field": "cartons"
+      },
+      {
+        "key": "pcsPerCarton",
+        "field": "cartonQty"
+      },
+      {
+        "key": "quantity",
+        "field": "quantity",
+        "derivedFrom": [
+          "cartons",
+          "cartonQty"
+        ]
+      },
+      {
+        "key": "unitPrice",
+        "field": "unitPrice"
+      },
+      {
+        "key": "amount",
+        "computed": "quantity×unitPrice"
+      },
+      {
+        "key": "description",
+        "composedFrom": [
+          "name",
+          "colors",
+          "material",
+          "dimensions",
+          "cartonDimensions",
+          "exportRemarks"
+        ]
+      },
+      {
+        "key": "image",
+        "field": "photos"
+      },
+      {
+        "key": "cartonCbm",
+        "field": "cartonCbm"
+      },
+      {
+        "key": "cbm",
+        "computed": "cartons×cartonCbm"
+      },
+      {
+        "key": "barcode",
+        "field": "barcode"
+      }
+    ],
+    "rowFormulas": "派生quantity/amount/cbm写公式+缓存值（已本地实现），显式quantity含0保持数值",
+    "grouping": "supplier精确文字跨日分sheet，不按sku去重",
+    "omittedFilters": [
+      "q",
+      "pending",
+      "missingPrice",
+      "ids"
+    ],
+    "rules": [
+      "记录日取createdAt北京时间，起止含首尾",
+      "未知null留空，cartonQty不允许0",
+      "不同币种独立TOTAL，不计算换汇",
+      "保持保存模板格式和原文，内部个人字段不默认带出",
+      "无图只省image，公式按key定位",
+      "缺未知的对应完整合计留空"
+    ]
+  },
+  "confirmation": {
+    "invalidate": [
+      "name",
+      "sku",
+      "supplier",
+      "supplierContact",
+      "colors",
+      "material",
+      "dimensions",
+      "weightG",
+      "unitPrice",
+      "currency",
+      "moq",
+      "cartonQty",
+      "cartons",
+      "quantity",
+      "barcode",
+      "exportRemarks",
+      "custom",
+      "cartonDimensions",
+      "cartonCbm",
+      "leadTimeDays",
+      "tradeTerms"
+    ],
+    "preserve": [
+      "description",
+      "notes",
+      "evaluation",
+      "rating",
+      "favorite"
+    ],
+    "photos": "新增/删除撤销；排序/封面不撤销",
+    "noOp": "实际值不变或AI无事实补空不撤销"
+  },
+  "reliability": {
+    "transfer": {
+      "channel": "callContainer",
+      "protocol": 2,
+      "chunkBytes": 655360,
+      "responseBudgetBytes": 921600,
+      "checksum": "sha256",
+      "legacy": "默认原协议保持；通过exportFileV2能力协商"
+    },
+    "cache": {
+      "reclaimableBudgetBytes": 62914560,
+      "exportRetentionDays": 7,
+      "protected": [
+        "draft",
+        "pendingUpload",
+        "editor",
+        "compare",
+        "preview",
+        "download",
+        "open",
+        "share"
+      ]
+    },
+    "newDatabaseFields": [],
+    "noPublicFallback": true
+  },
+  "auxiliaryPages": [
+    {
+      "id": "settings",
+      "name": "设置",
+      "implementation": "pages/me/index",
+      "entry": "商户/商品页内容右上角",
+      "tab": false,
+      "purpose": "个人资料、收藏、草稿、回收站、币种、Excel格式与帮助"
+    }
+  ]
+}

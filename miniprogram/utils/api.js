@@ -197,12 +197,17 @@ function uploadWorkbook(path, binding, templateOnly) {
   }));
 }
 function download(path, binding) {
+  if(/^\/api\/photos\/[a-f0-9-]+(?:\/thumbnail)?$/.test(path))return require('./file-cache').photo(binding,path,()=>downloadRaw(path,binding));
+  return downloadRaw(path,binding);
+}
+function downloadRaw(path, binding) {
   try { session.assert(binding); } catch (e) { return Promise.reject(e); }
   const auth = { Authorization: 'Bearer ' + binding.token };
   if (container.isContainerAvailable()) {
     return container.download({ path, header: auth, timeout: CONTAINER_MAX_TIMEOUT })
       .then(res => {
         session.assert(binding);
+        if (res.statusCode === 429) throw session.error('HTTP_429','请求较多，请稍后重试');
         if (res.statusCode < 200 || res.statusCode >= 300) throw downloadFailure(res.statusCode);
         return tempFile(res.data, path);
       })
@@ -215,6 +220,7 @@ function download(path, binding) {
     success(res) {
       try {
         session.assert(binding);
+        if (res.statusCode === 429) throw session.error('HTTP_429','请求较多，请稍后重试');
         if (res.statusCode < 200 || res.statusCode >= 300) throw downloadFailure(res.statusCode);
         resolve(res.tempFilePath);
       } catch (e) { reject(handleAuth(e, binding)); }

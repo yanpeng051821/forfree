@@ -134,10 +134,10 @@ test('微信换码期间切换账号或页面不重发原记录', async () => {
 });
 
 
-test('容器导出分段拼接完整Excel且不回退公网下载', async () => {
+test('旧容器协议只允许安全小文件且不回退公网下载', async () => {
   const store = require('../miniprogram/utils/store');
   const original = { request: api.request, getJob: api.getJob, download: api.download };
-  const size = 4 * 1024 * 1024 + 7, cache = new Map();
+  const size = 655360, cache = new Map();
   wx.env = { USER_DATA_PATH: '/test' }; wx.getFileSystemManager = () => ({
     writeFileSync: (p) => cache.set(p, Buffer.alloc(0)), readFileSync: p => cache.get(p),
     appendFileSync: (p, b) => cache.set(p, Buffer.concat([cache.get(p), b])), unlinkSync: p => cache.delete(p),
@@ -145,7 +145,7 @@ test('容器导出分段拼接完整Excel且不回退公网下载', async () => 
   api.request = async path => path === '/api/export-jobs' ? { jobId: JOB, state: 'pending' } : { size, chunkSize: 4 * 1024 * 1024 };
   api.getJob = async () => ({ jobId: JOB, kind: 'product-export', state: 'succeeded' });
   let count = 0; api.download = async path => { const offset = Number(path.split('offset=')[1]); const chunk = '/chunk' + count++; cache.set(chunk, Buffer.alloc(Math.min(4 * 1024 * 1024, size - offset), count)); return chunk; };
-  try { const file = await store.exportInContainer(session.capture(), JOB, {}); assert.equal(cache.get(file).length, size); assert.equal(count, 2); assert.equal(cache.size, 1); assert.equal(cache.get(file)[size - 1], 2); }
+  try { const file = await store.exportInContainer(session.capture(), JOB, {}); assert.equal(cache.get(file).length, size); assert.equal(count, 1); assert.equal(cache.size, 1); assert.equal(cache.get(file)[size - 1], 1); }
   finally { Object.assign(api, original); }
 });
 

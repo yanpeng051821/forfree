@@ -35,14 +35,16 @@ Page(kit.protectedPage({
     this.setData({dateControls:this._dateControls,dateMode:range?'range':'day',today,selectedDate:this._date || today,dateFrom:this._dateFrom || this._date || today,dateTo:this._dateTo || today,supplierScoped:this._supplier!==undefined,supplierLabel:this._supplier===undefined?'所有商家':this._supplier || '未填写商家'});
     if(options.scope==='confirmed')this.setData({scope:'confirmed'});
   },
-  onShow() { this.load(); },
-  onHide() { this.stopView(); }, onUnload() { this.stopView(); },
+  onShow() { this.load(true); },
+  onHide() { this.stopView(); }, onUnload() { if(store.files)store.files.release(this);this.stopView(); },
   stopView() { this._capabilitySerial=(this._capabilitySerial || 0)+1;this.setData({rangeChecking:false});kit.stop(this); },
-  async load() {
+  async load(preserveFile=false) {
     if (!kit.requireLogin(this)) return;
     const seq = kit.start(this);
-    this._file = null; this._fileBinding = null;this._merchantSummaries=null;
-    this.setData({ today:domain.chinaLocalDate(),fileReady: false, fileName: '', project: null, summary: null, preview: [], drafts: [], exportCount:0,merchantCount:null,loading: true, error: '' });
+    const keep=preserveFile && this._file && session.valid(this._fileBinding) && this._fileKey===this.fileKey();
+    if(!keep)this.invalidateFile();
+    this._merchantSummaries=null;
+    this.setData({ today:domain.chinaLocalDate(),project: null, summary: null, preview: [], drafts: [], exportCount:0,merchantCount:null,loading: true, error: '' });
     try {
       const binding = session.capture(); this._binding = binding;
       this.validateDateScope(false);
@@ -65,6 +67,15 @@ Page(kit.protectedPage({
     } catch (e) { if (this._alive && this._seq === seq) kit.message(this, e); }
     finally { if (this._alive && this._seq === seq) this.setData({ loading: false }); }
   },
+  fileKey() {
+    return domain.stable({owner:session.capture().owner,project:this._projectId,favorite:this._favorites,date:this._date,from:this._dateFrom,to:this._dateTo,supplier:this._supplier,scope:this.data.scope,audience:this.data.audience,images:this.data.images,template:this._metadata && this._metadata.templateVersion,snapshot:this._metadata && this._metadata.snapshot});
+  },
+  invalidateFile() {
+    this._file=null;this._fileBinding=null;this._fileKey=null;
+    if(store.files)store.files.protect(this,(this.data.preview || []).map(product=>product.cover));
+    this.setData({fileReady:false,fileName:'',generatedAt:''});
+  },
+  regenerate() { if(this._exporting)return;this.invalidateFile();return this.export({currentTarget:{dataset:{}}}); },
   rangeSupported() { return this._rangeSupported===true && session.valid(this._rangeBinding); },
   async requireRangeSupport(binding) {
     this._rangeSupported=false;
@@ -138,23 +149,28 @@ Page(kit.protectedPage({
   merchant(e) {
     if(this._exporting || this.data.loading)return;
     const selected=this._merchants[Number(e.detail.value)];if(!selected)return;
-    this._supplier=selected.supplier;this._file=null;this.setData({merchantIndex:Number(e.detail.value),supplierLabel:selected.label,supplierScoped:this._supplier!==undefined,fileReady:false,drafts:this.relatedDrafts(session.capture())});return this.refreshPreview();
+    this._supplier=selected.supplier;this.invalidateFile();this.setData({merchantIndex:Number(e.detail.value),supplierLabel:selected.label,supplierScoped:this._supplier!==undefined,drafts:this.relatedDrafts(session.capture())});return this.refreshPreview();
   },
   async loadMetadata(binding, seq) {
     const metadata = await api.request('/api/export-preview?images=' + (this.data.images ? 'yes' : 'no') + '&audience=' + this.data.audience + '&scope='+this.data.scope+'&'+this.scopeQuery(), { identity: binding });
-    if (kit.current(this, binding, seq)) {this._metadata=metadata;metadata.layout=metadata.layout||{fieldSize:10,bodySize:12,chineseFont:"宋体",latinFont:"Times New Roman"};this.setData({previewWidth:metadata.columns.filter(c=>!c.hidden).reduce((n,c)=>n+columnWidth(c),0),previewFieldStyle:'font-size:'+metadata.layout.fieldSize*2+'rpx;color:'+(metadata.layout.fieldColor||'#000000')+';font-family:'+metadata.layout.chineseFont+';',previewBodyStyle:'font-size:'+metadata.layout.bodySize*2+'rpx;color:'+(metadata.layout.bodyColor||'#000000')+';font-family:'+metadata.layout.latinFont+';', templateColumns: metadata.columns.filter(c => !c.hidden).map(c=>Object.assign({},c,{previewWidth:columnWidth(c)})), headerRows: metadata.headerRows.filter(r => r.enabled), documentTitle: metadata.documentTitle, metadataReady: true });}
+    if (kit.current(this, binding, seq)) {this._metadata=metadata;
+      if(this._file && this._fileKey!==this.fileKey())this.invalidateFile();
+      this.setData({missingCounts:metadata.counts || null,templateFooter:metadata.footer || {}});
+      metadata.layout=metadata.layout||{fieldSize:10,bodySize:12,chineseFont:"宋体",latinFont:"Times New Roman"};this.setData({previewWidth:metadata.columns.filter(c=>!c.hidden).reduce((n,c)=>n+columnWidth(c),0),previewFieldStyle:'font-size:'+metadata.layout.fieldSize*2+'rpx;color:'+(metadata.layout.fieldColor||'#000000')+';font-family:'+metadata.layout.chineseFont+';',previewBodyStyle:'font-size:'+metadata.layout.bodySize*2+'rpx;color:'+(metadata.layout.bodyColor||'#000000')+';font-family:'+metadata.layout.latinFont+';', templateColumns: metadata.columns.filter(c => !c.hidden).map(c=>Object.assign({},c,{previewWidth:columnWidth(c)})), headerRows: metadata.headerRows.filter(r => r.enabled), documentTitle: metadata.documentTitle, metadataReady: true });}
   },
   async loadPreview(binding, seq) {
     const raw = await api.request('/api/products?' + this.scopeQuery() + '&limit=3&status=' + (this.data.scope === 'confirmed' ? 'confirmed' : 'all'), { identity: binding });
     if(!kit.current(this,binding,seq))return;
     const page = domain.productPage(raw);
     const preview = await Promise.all(page.items.map(async product => {
-      const photos = this.data.images ? await store.hydratePhotos(product.photos.slice(0, 1), binding) : [];
+      const photos = this.data.images ? await store.hydratePhotos(product.photos.slice(0, 1), binding, this) : [];
       return Object.assign({}, domain.productView(product), { cover: photos[0] && photos[0].path || '',cells:previewCells(this.data.templateColumns,product,this._metadata && this._metadata.layout) });
     }));
     if (!kit.current(this, binding, seq)) return;
     const summary = raw.summary || this.data.summary;
-    this.setData({ summary, preview, merchantCount:this.scopedMerchantCount(),exportCount: raw.matchedCount !== undefined ? raw.matchedCount : summary ? (this.data.scope === 'confirmed' ? summary.confirmed : summary.total) : preview.length });
+    const counts=this._metadata && this._metadata.counts;
+    this.setData({ summary, preview, merchantCount:counts?counts.merchants:this.scopedMerchantCount(),exportCount:counts?counts.products:raw.matchedCount !== undefined ? raw.matchedCount : summary ? (this.data.scope === 'confirmed' ? summary.confirmed : summary.total) : preview.length });
+    if(store.files)store.files.protect(this,preview.map(product=>product.cover).concat(this._file || []));
   },
   async refreshPreview() {
     if (!kit.requireLogin(this)) { this.setData({ loading: false, preview: [], drafts: [], project: null, summary: null, error: '' }); return; }
@@ -165,11 +181,12 @@ Page(kit.protectedPage({
     finally { if (this._alive && this._seq === seq) this.setData({ loading: false }); }
   },
   toggleColumns() { this.setData({ columnsOpen: !this.data.columnsOpen }); },
-  audience(e) { if (!this._exporting) { this._file = null; this.setData({ audience: e.currentTarget.dataset.value, fileReady: false }); return this.refreshPreview(); } },
-  scope(e) { if (this._exporting) return; this._file = null; this.setData({ scope: e.currentTarget.dataset.value, fileReady: false }); return this.refreshPreview(); },
-  format(e) { if (this._exporting) return; this._file = null; this.setData({ images: e.currentTarget.dataset.value === 'images', fileReady: false }); return this.refreshPreview(); },
+  toggleFooter() { this.setData({footerOpen:!this.data.footerOpen}); },
+  audience(e) { if (!this._exporting) { this.invalidateFile(); this.setData({ audience: e.currentTarget.dataset.value }); return this.refreshPreview(); } },
+  scope(e) { if (this._exporting) return; this.invalidateFile(); this.setData({ scope: e.currentTarget.dataset.value }); return this.refreshPreview(); },
+  format(e) { if (this._exporting) return; this.invalidateFile(); this.setData({ images: e.currentTarget.dataset.value === 'images' }); return this.refreshPreview(); },
   returnToProducts() { wx.switchTab({ url: '/pages/products/index' }); },
-  showExportInfo() {kit.info('导出说明','按公司表格设置的列、顺序、表头和字体导出，按商户分工作表。采购数量优先使用填写值，否则根据箱数 × 每箱数量计算；未知值保持空白。内部记录另外包含现场描述、联系信息和评价。草稿与回收站商品不纳入导出。最多500件商品。');},
+  showExportInfo() {kit.info('导出说明','按公司表格设置的列、顺序、表头和字体导出，按商户分工作表。记录数量优先使用填写值，否则根据箱数 × 每箱数量计算；未知值保持空白。数量、金额和体积使用公式，可在 Excel 中继续整理。带图文件包含全部已保存照片，导出副本压缩，不改变原图。内部记录另外包含现场描述、联系信息和评价。搜索、缺价格、待核对筛选不限制文件范围；仅已核对需在此明确选择。草稿与回收站商品不纳入导出，最多500件。');},
   resume(e) { const item = this.data.drafts[Number(e.currentTarget.dataset.index)]; if (item) wx.navigateTo({ url: store.drafts.editorUrl(item) }); },
   fileName() {
     const date = this._dateControls && this.data.dateMode==='range' ? this._dateFrom+'至'+this._dateTo:this._date || (this.data.project && this.data.project.date) || domain.chinaLocalDate();
@@ -185,11 +202,15 @@ Page(kit.protectedPage({
       if(this._dateControls && this.data.dateMode==='range')await this.requireRangeSupport(binding);
       if(!kit.current(this,binding,seq))return;
       this.validateDateScope();
-      if (this._file && session.valid(this._fileBinding)) {
-        await new Promise((resolve, reject) => share && wx.shareFileMessage ? wx.shareFileMessage({ filePath: this._file, fileName: this.fileName(), success: resolve, fail: () => reject(new Error('分享未完成，可再次分享或打开文件')) }) : wx.openDocument({ filePath: this._file, fileType: 'xlsx', showMenu: true, success: resolve, fail: () => { this._file = null; reject(new Error('文件已失效，请重新导出')); } }));
+      if(this._file && store.files && !store.files.validFile(binding,this._file))this.invalidateFile();
+      if (this._file && session.valid(this._fileBinding) && (!this._fileKey || this._fileKey===this.fileKey())) {
+        const holder={};if(store.files)store.files.protect(holder,[this._file]);
+        try{
+        await new Promise((resolve, reject) => share && wx.shareFileMessage ? wx.shareFileMessage({ filePath: this._file, fileName: this.fileName(), success: resolve, fail: () => reject(new Error('分享未完成，可再次分享或打开文件')) }) : wx.openDocument({ filePath: this._file, fileType: 'xlsx', showMenu: true, success: resolve, fail: () => { this.invalidateFile(); reject(new Error('文件已失效，请重新导出')); } }));
+        }finally{if(store.files)store.files.release(holder);}
         return;
       }
-      await store.exportProject(binding, this._projectId, e.currentTarget.dataset.share === 'yes', { onFileReady: path => { if (kit.current(this,binding,seq)) { this._file = path; this._fileBinding = binding; this.setData({ fileReady: true, fileName: this.fileName() }); } }, audience: this.data.audience, scope: this.data.scope, images: this.data.images, supplier: this._supplier, date: this._date, dateFrom:this._dateFrom,dateTo:this._dateTo,favorite: this._favorites, fileName: this.fileName() }); }
+      await store.exportProject(binding, this._projectId, e.currentTarget.dataset.share === 'yes', { isCurrent:()=>kit.current(this,binding,seq),onFileReady: path => { if (kit.current(this,binding,seq)) { this._file = path; this._fileBinding = binding;this._fileKey=this.fileKey(); this.setData({ fileReady: true, fileName: this.fileName(),generatedAt:new Date().toLocaleString('zh-CN') }); } }, audience: this.data.audience, scope: this.data.scope, images: this.data.images, supplier: this._supplier, date: this._date, dateFrom:this._dateFrom,dateTo:this._dateTo,favorite: this._favorites, fileName: this.fileName() }); }
     catch (err) { if (this._alive && this._seq === seq) kit.message(this, err); }
     finally { this._exporting = false; if (this._alive) this.setData({ exporting: false }); }
   }

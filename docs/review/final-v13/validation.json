@@ -1,0 +1,21 @@
+{
+  "date": "2026-10-24",
+  "version": "1.3",
+  "pass": true,
+  "scope": "正式方案/字段/既有数值语义/两tab与文档一致性，业务测试另记录；非真机验收",
+  "checks": [
+    "formal authority and no new business routes",
+    "product schema uses real field keys and complete data",
+    "reference eleven columns and real mappings",
+    "numeric rules distinguish unknown and explicit zero",
+    "current exporter formulas and transport implementation are explicit",
+    "one chosen transport and cache budget",
+    "no active queue or fabricated AI suggestions in mockups",
+    "current report/handoffs and mirrors are reproducible",
+    "authorized local implementation stays within four batches without schema/deployment changes"
+  ],
+  "productFields": 27,
+  "referenceColumns": 11,
+  "businessCodeChanged": true,
+  "businessWorktreeClean": false
+}

@@ -1,3 +1,4 @@
+import { effective } from "./excel-value";
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -162,9 +163,9 @@ test('merchant API scopes real SQLite pages, aggregates, previews and XLSX bytes
           assert.deepEqual([...new Set(rows.map(row => row.sheet.name))], [shop]);
           const precise = rows.find(row => row.cell('sku').text === 'A-1')!;
           assert.equal(precise.cell('unitPrice').value, 1.2345); assert.equal(precise.cell('unitPrice').numFmt, '#,##0.0000');
-          assert.equal(precise.cell('quantity').value, 7); assert.ok(Math.abs(Number(precise.cell('amount').value) - 8.6415) < 1e-10);
+          assert.equal(effective(precise.cell('quantity')), 7); assert.ok(Math.abs(Number(effective(precise.cell('amount'))) - 8.6415) < 1e-10);
           assert.equal(precise.cell('cartonCbm').value, .012345); assert.equal(precise.cell('cartonCbm').numFmt, '0.000000');
-          assert.ok(Math.abs(Number(precise.cell('cbm').value) - .037035) < 1e-10);
+          assert.ok(Math.abs(Number(effective(precise.cell('cbm'))) - .037035) < 1e-10);
           assert.equal(rows.find(row => row.cell('sku').text === 'A-0')!.cell('unitPrice').value, null);
         }
       }

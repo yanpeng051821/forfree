@@ -48,13 +48,13 @@ test('isolated PostgreSQL range migration preserves legacy calls and validates r
     app=await createApp({config,identity:{exchange:async code=>code},service:new MarketService(undefined,{enabled:()=>false,extract:async()=>{throw new Error('unused');}}),cloud:{db,auth,blobs,uploadBroker:(context,registry)=>new CloudUploadBroker(db,blobs,context,registry),jobs:(context,uploads)=>new CloudJobs(db,blobs,uploads,context)}});
     const get=(path:string,query:Record<string,string|number>={})=>app!.inject({method:'GET',url:path+'?'+new URLSearchParams(Object.entries(query).map(([k,v])=>[k,String(v)])),headers:{authorization:'Bearer '+a.token}});
     await t.test('new backend advertises false and blocks ranges until SQL migration is present',async()=>{
-      assert.deepEqual((await get('/api/capabilities')).json(),{dateRangeExport:false});
+      assert.deepEqual((await get('/api/capabilities')).json(),{dateRangeExport:false,exportFileV2:true});
       assert.equal((await get('/api/products',range)).statusCode,409);
       const r=await app!.inject({method:'POST',url:'/api/export-jobs',headers:{authorization:'Bearer '+a.token},payload:range});assert.equal(r.statusCode,409,r.body);
       assert.equal(pg.sql('SELECT count(*) FROM public.huoji_jobs;'),'0');
     });
     const sql=readFileSync(join(migrationDir,rangeMigration),'utf8');pg.sql(sql);pg.sql(sql);
-    assert.deepEqual((await get('/api/capabilities')).json(),{dateRangeExport:true});
+    assert.deepEqual((await get('/api/capabilities')).json(),{dateRangeExport:true,exportFileV2:true});
     const p1=await records.createProject(ctx.owner,{name:'task1',market:'',date:'2026-01-01'},randomUUID()),p2=await records.createProject(ctx.owner,{name:'task2',market:'',date:'2026-01-02'},randomUUID());
     const foreignRecords=new CloudRecords(db,blobs,other),foreign=await foreignRecords.createProject(other.owner,{name:'other',market:'',date:'2026-10-18'},randomUUID());
     const add=async(projectId:string,sku:string,at:string,patch:Partial<typeof emptyFields>={},owner=records)=>{const product=await owner.saveProduct(owner===records?ctx.owner:other.owner,{projectId,requestKey:randomUUID(),fields:{...emptyFields,name:sku,sku,supplier:'同名商家',unitPrice:2,cartons:1,cartonQty:12,cartonCbm:.123,confirmed:true,...patch},photoIds:[]});pg.sql(`UPDATE public.huoji_products SET created_at=${quote(at)},updated_at='2026-11-01T00:00:00Z' WHERE id=${quote(product.id)};`);return product;};

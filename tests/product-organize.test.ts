@@ -16,7 +16,7 @@ test('automatic organization fills explicit product, merchant and notes, preserv
  const value=fixture();value.supplier='手填商户';value.unitPrice=0;value.rating=4;value.evaluation='手填判断';
  const result=extractText('品名：陶瓷杯，报价12元，起订100件，商户：义乌陶瓷，联系方式：微信 a123，备注：问包装');
  const fields=mergeOrganizedProduct(value,result);
- assert.equal(fields.name,'陶瓷杯');assert.equal(fields.supplier,'手填商户');assert.equal(fields.unitPrice,0);assert.equal(fields.moq,100);assert.equal(fields.supplierContact,'微信 a123');assert.equal(fields.notes,'问包装');assert.equal(fields.rating,4);assert.equal(fields.evaluation,'手填判断');assert.equal(fields.confirmed,false);
+ assert.equal(fields.name,'陶瓷杯');assert.equal(fields.supplier,'手填商户');assert.equal(fields.unitPrice,0);assert.equal(fields.moq,100);assert.equal(fields.supplierContact,'');assert.equal(fields.notes,'问包装');assert.equal(fields.rating,4);assert.equal(fields.evaluation,'手填判断');assert.equal(fields.confirmed,false);
 });
 test('same owner jobs execute sequentially; different owners progress; queue is bounded and slots release once',async()=>{
  const q=new ProductOrganizeQueue(), release=Array.from({length:4},()=>q.reserve('a'));assert.throws(()=>q.reserve('a'),/队列已满/);
@@ -25,6 +25,14 @@ test('same owner jobs execute sequentially; different owners progress; queue is 
  const next=q.run('a',async()=>{order.push('second');});
  await q.run('b',async()=>{order.push('other');});assert.deepEqual(order,['first','other']);unblock();await Promise.all([first,next]);assert.deepEqual(order,['first','other','finish','second']);
  release.forEach(r=>{r();r();});q.reserve('a')();
+});
+test('automatic factual no-op and notes-only fill preserve confirmation; never changes store/contact/currency or fills mismatched price',()=>{
+  const current:Product={...fixture(),name:'人工杯子',confirmed:true,supplier:'',supplierContact:'',currency:'CNY'};
+  const fields=mergeOrganizedProduct(current,{fields:{name:'AI杯子',supplier:'另一家',supplierContact:'识别联系人',currency:'USD',unitPrice:12,notes:'待问标签'},mode:'model',warning:''});
+  assert.equal(fields.name,'人工杯子');assert.equal(fields.unitPrice,null);assert.equal(fields.currency,'CNY');
+  assert.equal(fields.supplier,'');assert.equal(fields.supplierContact,'');assert.equal(fields.notes,'待问标签');assert.equal(fields.confirmed,true);
+  const changed=mergeOrganizedProduct(current,{fields:{unitPrice:12,currency:'CNY'},mode:'model',warning:''});
+  assert.equal(changed.unitPrice,12);assert.equal(changed.confirmed,false);
 });
 test('saved record survives AI failure; background completion saves once and a concurrent manual edit wins',async()=>{
  const root=mkdtempSync(join(tmpdir(),'huoji-capture-')),previous=process.env.APP_DATA_DIR;process.env.APP_DATA_DIR=root;

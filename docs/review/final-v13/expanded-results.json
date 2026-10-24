@@ -1,0 +1,44 @@
+[
+  {
+    "screen": "04-field-capture",
+    "width": 320,
+    "overflow": false,
+    "smallControls": [],
+    "missingImages": 0
+  },
+  {
+    "screen": "08-export-picker",
+    "width": 320,
+    "overflow": false,
+    "smallControls": [],
+    "missingImages": 0
+  },
+  {
+    "screen": "04-field-capture",
+    "width": 375,
+    "overflow": false,
+    "smallControls": [],
+    "missingImages": 0
+  },
+  {
+    "screen": "08-export-picker",
+    "width": 375,
+    "overflow": false,
+    "smallControls": [],
+    "missingImages": 0
+  },
+  {
+    "screen": "04-field-capture",
+    "width": 414,
+    "overflow": false,
+    "smallControls": [],
+    "missingImages": 0
+  },
+  {
+    "screen": "08-export-picker",
+    "width": 414,
+    "overflow": false,
+    "smallControls": [],
+    "missingImages": 0
+  }
+]

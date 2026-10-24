@@ -1,0 +1,65 @@
+{
+  "date": "2026-10-24",
+  "synthetic": true,
+  "network": false,
+  "database": false,
+  "sourceUnchanged": true,
+  "desktopOpenVerified": false,
+  "phoneVerified": false,
+  "output": [
+    {
+      "file": "商品记录-带全部图片.xlsx",
+      "bytes": 135594,
+      "sha256": "b8d8283e4c171aaa966887b9e7c8609093ed15c4d43c97295aee933c3051fb41",
+      "products": 4,
+      "photos": 9,
+      "worksheets": 3,
+      "counts": {
+        "products": 4,
+        "merchants": 2,
+        "missingPrice": 1,
+        "missingQuantity": 1,
+        "missingVolume": 2,
+        "photos": 9
+      },
+      "zipCRC": true,
+      "formulaCaches": true
+    },
+    {
+      "file": "商品记录-纯数据.xlsx",
+      "bytes": 15552,
+      "sha256": "31b059ac14babca8bad2e5959286dc7069748f548a890ed5c6fa94e6562e502f",
+      "products": 4,
+      "photos": 0,
+      "worksheets": 3,
+      "counts": {
+        "products": 4,
+        "merchants": 2,
+        "missingPrice": 1,
+        "missingQuantity": 1,
+        "missingVolume": 2,
+        "photos": 9
+      },
+      "zipCRC": true,
+      "formulaCaches": true
+    },
+    {
+      "file": "商品记录-仅已核对.xlsx",
+      "bytes": 15194,
+      "sha256": "6553ba30d56a8ec8d7f4955e3e2edcb35fa486c5312f4f38056ff8086faf5c97",
+      "products": 2,
+      "photos": 0,
+      "worksheets": 3,
+      "counts": {
+        "products": 2,
+        "merchants": 2,
+        "missingPrice": 0,
+        "missingQuantity": 0,
+        "missingVolume": 0,
+        "photos": 8
+      },
+      "zipCRC": true,
+      "formulaCaches": true
+    }
+  ]
+}

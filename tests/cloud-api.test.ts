@@ -1,3 +1,4 @@
+import { effective } from "./excel-value";
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -249,7 +250,7 @@ test('background organization acknowledges once, persists without polling, and r
     // Read the product directly; no /api/jobs polling triggers execution or persistence.
     let current:Product|undefined;
     for(let n=0;n<100;n++){current=f.rpc.products.get(product.id)?.value;if(current?.organizeState==='done')break;await new Promise(r=>setTimeout(r,5));}
-    assert.equal(current?.name,'后台杯子');assert.equal(current?.supplier,'合成商户');assert.equal(current?.description,'合成现场记录');assert.equal(current?.organizeState,'done');
+    assert.equal(current?.name,'后台杯子');assert.equal(current?.supplier,'');assert.equal(current?.description,'合成现场记录');assert.equal(current?.organizeState,'done');
     const broken=(await post('/api/products',{requestKey:randomUUID(),projectId:project.id,fields:{...emptyFields,name:'未命名商品',description:'不会丢失的文字'},photoIds:[]})).json();
     const jobs=f.cloud.jobs!;
     f.cloud.jobs=(context,uploads)=>{const value=jobs(context,uploads);value.startExtraction=async()=>{throw new AppError('BUSY','提交失败',503);};return value;};
@@ -391,7 +392,7 @@ test('云 API 真实 CloudRecords 闭环：鉴权资料任务商品照片收藏�
     const frozen = sheet.views.find(view => view.state === 'frozen'); assert.ok(frozen && 'ySplit' in frozen && typeof frozen.ySplit === 'number');
     const header = sheet.getRow(frozen.ySplit), columns = header.values as string[];
     assert.deepEqual(columns.slice(1), reference.map(column => column.label));
-    const value = (key: string) => { const column = reference.find(column => column.key === key); assert.ok(column); const index = columns.indexOf(column.label); assert.ok(index > 0); return sheet.getRow(header.number + 1).getCell(index).value; };
+    const value = (key: string) => { const column = reference.find(column => column.key === key); assert.ok(column); const index = columns.indexOf(column.label); assert.ok(index > 0); return effective(sheet.getRow(header.number + 1).getCell(index)); };
     assert.equal(value('unitPrice'), 15); assert.equal(value('description'), fields.name);
     assert.equal(value('quantity'), null); assert.equal(value('amount'), null); assert.equal(value('pcsPerCarton'), 24);
     for (const label of ['商品名称', '现场记录单价', '选品评价', '选品评分', '商户联系方式', '现场备注']) assert.ok(!columns.includes(label));
@@ -403,6 +404,16 @@ test('云 API 真实 CloudRecords 闭环：鉴权资料任务商品照片收藏�
     const metadata = await request(route); assert.equal(metadata.json().chunkSize, 4 * 1024 * 1024);
     const downloaded = await request(route + '?offset=0'); assert.equal(downloaded.statusCode, 200);
     assert.equal(downloaded.rawPayload.length, metadata.json().size);
+    const crypto=await import('node:crypto'),digest=(bytes:Buffer)=>crypto.createHash('sha256').update(bytes).digest('hex');
+    const v2=await request(route+'?protocol=2');
+    assert.equal(v2.statusCode,200);assert.equal(v2.json().protocol,2);assert.equal(v2.json().jobId,submit.json().jobId);
+    assert.equal(v2.json().chunkSize,655360);assert.equal(v2.json().sha256,digest(downloaded.rawPayload));
+    assert.equal(v2.json().chunkCount,Math.ceil(downloaded.rawPayload.length/655360));
+    const v2block=await request(route+'?protocol=2&offset=0');assert.equal(v2block.statusCode,200);
+    assert.equal(digest(v2block.rawPayload),v2.json().chunkHashes[0]);
+    assert.equal((await request(route+'?protocol=2&offset=1')).statusCode,400);
+    assert.equal((await request(route+'?protocol=2',b.token)).statusCode,404);
+    const capabilities=await request('/api/capabilities');assert.equal(capabilities.json().exportFileV2,true);
     const generated = new ExcelJS.Workbook(); await generated.xlsx.load(downloaded.rawPayload as unknown as ExcelJS.Buffer); assert.equal(generated.worksheets.filter(s => s.name !== '说明').length, 1);
     const generatedSheet = generated.worksheets.find(s => s.name !== '说明')!;
     assert.deepEqual((generatedSheet.getRow(header.number).values as string[]).slice(1), reference.map(column => column.label));

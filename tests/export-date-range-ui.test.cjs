@@ -134,12 +134,32 @@ test('range previews retain separately recorded rows with identical product deta
 test('store sends exactly the same range through container jobs and authenticated direct download and rejects partial dates',async()=>{
   let definition;const calls=[],binding={},files=[];
   const api={usesContainer:()=>false,download:async(url,b)=>{calls.push({url,b});return'/synthetic/download';},request:async(url,args)=>{calls.push({url,args});throw new Error('STOP_AFTER_SYNTHETIC_JOB');}};
-  const modules={api,session:{assert:value=>assert.equal(value,binding)},domain,draft:{},jobs:{}};
-  const context={module:{exports:{}},require:id=>modules[id.slice(2)],wx:{env:{USER_DATA_PATH:'/synthetic'},getFileSystemManager:()=>({mkdirSync(){},renameSync:(a,b)=>files.push(b)}),openDocument:o=>o.success()}};
+  const modules={api,session:{assert:value=>assert.equal(value,binding)},domain,draft:{},jobs:{},sha256:require('../miniprogram/utils/sha256'),'file-cache':{protect(){},release(){},put(){}}};
+  const context={module:{exports:{}},require:id=>modules[id.slice(2)],wx:{getStorageSync:()=>'',env:{USER_DATA_PATH:'/synthetic'},getFileSystemManager:()=>({mkdirSync(){},renameSync:(a,b)=>files.push(b)}),openDocument:o=>o.success()}};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../miniprogram/utils/store.js'),'utf8'),context);definition=context.module.exports;
   const options={dateFrom:FIRST,dateTo:TODAY,supplier:'',scope:'confirmed',images:false};
   await definition.exportProject(binding,undefined,false,options);const direct=params(calls[0].url);assert.equal(direct.get('dateFrom'),FIRST);assert.equal(direct.get('dateTo'),TODAY);assert.equal(direct.has('date'),false);assert.equal(direct.get('supplier'),'');assert.equal(direct.get('scope'),'confirmed');assert.ok(files[0].endsWith('看货记录-'+FIRST+'至'+TODAY+'.xlsx'));
   await assert.rejects(()=>definition.exportInContainer(binding,undefined,options),/STOP_AFTER_SYNTHETIC_JOB/);const job=calls[1].args.data;for(const [key,value]of Object.entries(job))assert.equal(direct.get(key),String(value));assert.equal(Object.hasOwn(job,'date'),false);
   for(const invalid of [{dateFrom:FIRST},{dateTo:TODAY},{date:FIRST,dateFrom:FIRST,dateTo:TODAY},{dateFrom:'2026-02-30',dateTo:TODAY},{dateFrom:TODAY,dateTo:FIRST}])await assert.rejects(()=>definition.exportInContainer(binding,undefined,invalid),/起止日期/);
   assert.equal(calls.length,2);
+});
+
+test('returning keeps generated file and timestamp for same snapshot; changed product version or account invalidates it',async()=>{
+  let version=1;
+  const h=setup({date:FIRST},{request:url=>url.startsWith('/api/export-preview?')?{columns:[],headerRows:[],templateVersion:1,snapshot:[['synthetic-product',version]]}:undefined});
+  await h.page.load();await h.page.export({currentTarget:{dataset:{}}});const file=h.page._file,time=h.page.data.generatedAt;
+  assert.equal(h.page.data.fileReady,true);h.page.onHide();await h.page.load(true);
+  assert.equal(h.page._file,file);assert.equal(h.page.data.generatedAt,time);assert.equal(h.exports.length,1);
+  version++;await h.page.load(true);assert.equal(h.page._file,null);assert.equal(h.page.data.fileReady,false);
+  await h.page.export({currentTarget:{dataset:{}}});h.changeAccount();await h.page.load(true);assert.equal(h.page._file,null);
+});
+
+test('metadata counts and company footer remain exact; confirmed/format changes revoke the file',async()=>{
+  const footer={paymentTerms:'原文条款，不代表下单',shippingMark:'客户唛头',packingRequirements:'标签要求'};
+  const h=setup({date:FIRST},{request:url=>url.startsWith('/api/export-preview?')?{columns:[],headerRows:[],counts:{products:2,merchants:1,missingPrice:1,missingQuantity:2,missingVolume:2,photos:6},footer}:undefined});
+  await h.page.load();assert.equal(h.page.data.exportCount,2);assert.equal(h.page.data.merchantCount,1);
+  assert.equal(h.page.data.templateFooter.paymentTerms,footer.paymentTerms);assert.equal(h.page.data.missingCounts.missingPrice,1);
+  await h.page.export({currentTarget:{dataset:{}}});assert.equal(h.page.data.fileReady,true);
+  await h.page.format({currentTarget:{dataset:{value:'text'}}});assert.equal(h.page.data.fileReady,false);assert.equal(h.page.data.fileName,'');
+  await h.page.export({currentTarget:{dataset:{}}});await h.page.scope({currentTarget:{dataset:{value:'confirmed'}}});assert.equal(h.page.data.fileReady,false);
 });

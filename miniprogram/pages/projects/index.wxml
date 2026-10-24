@@ -1,4 +1,5 @@
 <view wx:if="{{authenticated}}" class="page tasks-page">
+  <view class="page-settings-row"><button class="page-settings-button" bindtap="settings" aria-label="打开设置" hover-class="control-pressed">设置</button></view>
   <date-rail wx:if="{{loggedIn}}" selected-date="{{selectedDate}}" counts="{{dateCounts}}" show-today="{{false}}" bindchange="reviewDate" />
   <view class="task-list-head"><text class="muted">{{loggedIn ? visibleProjects.length + ' 家商户' : ''}}</text><view class="icon-button" bindtap="exportDay" aria-label="导出选中日期的有效商品" hover-class="press"><image class="icon sm" src="/assets/icons/export.png" /></view></view>
   <block>

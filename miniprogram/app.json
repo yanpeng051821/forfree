@@ -29,7 +29,7 @@
     "list": [
       {
         "pagePath": "pages/projects/index",
-        "text": "看货",
+        "text": "商户",
         "iconPath": "assets/icons/folder.png",
         "selectedIconPath": "assets/icons/folder-dark.png"
       },
@@ -38,12 +38,6 @@
         "text": "商品",
         "iconPath": "assets/icons/shop.png",
         "selectedIconPath": "assets/icons/shop-dark.png"
-      },
-      {
-        "pagePath": "pages/me/index",
-        "text": "我的",
-        "iconPath": "assets/icons/user.png",
-        "selectedIconPath": "assets/icons/user-dark.png"
       }
     ]
   },

@@ -1,5 +1,10 @@
 const emptyFields = Object.freeze({ name: '', sku: '', supplier: '', supplierContact: '', colors: '', material: '', dimensions: '', weightG: null, unitPrice: null, currency: 'CNY', moq: null, cartonQty: null, cartons:null,quantity:null,barcode:'',exportRemarks:'',custom:{}, cartonDimensions: '', cartonCbm: null, leadTimeDays: null, tradeTerms: '', description: '', notes: '', confirmed: false, favorite: false, rating: null, evaluation: '' });
 const numeric = ['weightG', 'unitPrice', 'moq', 'cartonQty', 'cartonCbm', 'leadTimeDays','cartons','quantity'];
+const factual = ['name','sku','supplier','supplierContact','colors','material','dimensions','weightG','unitPrice','currency','moq','cartonQty','cartons','quantity','barcode','exportRemarks','custom','cartonDimensions','cartonCbm','leadTimeDays','tradeTerms'];
+function factChanged(before, after) {
+  const normalize = (key, value) => numeric.includes(key) ? value === '' || value == null ? null : Number(value) : value;
+  return factual.some(key => stable(normalize(key, before[key])) !== stable(normalize(key, after[key])));
+}
 function uuid() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
     const r = Math.floor(Math.random() * 16); return (c === 'x' ? r : (r & 3) | 8).toString(16);
@@ -39,17 +44,19 @@ function validateFields(source) {
 }
 function mergeExtraction(current, extracted) {
   const fields = fieldsFrom(current), conflicts = [];
-  const allowed = ['name', 'sku', 'supplier', 'supplierContact', 'notes','exportRemarks', 'colors', 'material', 'dimensions', 'weightG', 'unitPrice', 'currency', 'moq','cartons','quantity','barcode', 'cartonQty', 'cartonDimensions', 'cartonCbm', 'leadTimeDays', 'tradeTerms'];
+  const allowed = ['name', 'sku', 'notes','exportRemarks', 'colors', 'material', 'dimensions', 'weightG', 'unitPrice', 'moq','cartons','quantity','barcode', 'cartonQty', 'cartonDimensions', 'cartonCbm', 'leadTimeDays', 'tradeTerms'];
+  const currencyMismatch = extracted && extracted.unitPrice != null && extracted.currency && extracted.currency !== fields.currency;
   allowed.forEach(k => {
     const value = extracted && extracted[k];
     if (value === null || value === undefined) return;
+    if (k === 'unitPrice' && currencyMismatch) { conflicts.push('currency'); return; }
     if (numeric.includes(k) && (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 100000000 || (['moq', 'cartonQty', 'leadTimeDays','cartons','quantity'].includes(k) && !Number.isInteger(value)) || (k === 'cartonQty' && value === 0))) return;
     if (!numeric.includes(k) && (typeof value !== 'string' || value.length > (['name', 'sku'].includes(k) ? 120 : ['notes','exportRemarks'].includes(k) ? 5000 : 200))) return;
     if (k === 'currency' && !['CNY', 'USD', 'EUR'].includes(value)) return;
-    if (fields[k] === '' || fields[k] === null || fields[k] === undefined) fields[k] = value;
+    if (fields[k] === '' || fields[k] === null || fields[k] === undefined || (k === 'name' && fields[k] === '未命名商品')) fields[k] = value;
     else if (fields[k] !== value) conflicts.push(k);
   });
-  fields.confirmed = false;
+  if (factChanged(current, fields)) fields.confirmed = false;
   return { fields, conflicts };
 }
 function requestFor(payload, previous) {
@@ -83,4 +90,4 @@ function productView(product) {
   if (!product.supplier) missing.push('供应商');
   return Object.assign({}, product, { priceText: priceText(product), missingText: missing.length ? '待补：' + missing.join('、') : '', specText: [product.material, product.colors, product.dimensions].filter(Boolean).join(' · ') || '规格待填写' });
 }
-module.exports = { emptyFields, numeric, uuid, stable, fieldsFrom, validateFields, mergeExtraction, requestFor, filterProducts, uncertain, chinaLocalDate, productPage, priceText, productView };
+module.exports = { emptyFields, numeric, factual, factChanged, uuid, stable, fieldsFrom, validateFields, mergeExtraction, requestFor, filterProducts, uncertain, chinaLocalDate, productPage, priceText, productView };

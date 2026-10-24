@@ -43,7 +43,7 @@ test('range APIs use first saved China dates consistently, retain cross-task dup
     const range={dateFrom:'2026-10-18',dateTo:'2026-10-20'},exact={...range,supplier:'同名商家'};
     const get=(route:string,query:Record<string,string|number|undefined>={},token=a.token)=>app.inject({method:'GET',url:route+'?'+new URLSearchParams(Object.entries(query).flatMap(([k,v])=>v===undefined?[]:[[k,String(v)]])),headers:{authorization:'Bearer '+token}});
     assert.equal((await app.inject({method:'GET',url:'/api/capabilities'})).statusCode,401);
-    assert.deepEqual((await get('/api/capabilities')).json(),{dateRangeExport:true});
+    assert.deepEqual((await get('/api/capabilities')).json(),{dateRangeExport:true,exportFileV2:false});
     const first=(await get('/api/products',{...exact,limit:2})).json();
     assert.equal(first.matchedCount,3);assert.equal(first.summary.total,3);assert.equal(first.summary.confirmed,2);assert.ok(first.nextCursor);
     const last=(await get('/api/products',{...exact,limit:2,cursor:first.nextCursor})).json();
@@ -62,7 +62,7 @@ test('range APIs use first saved China dates consistently, retain cross-task dup
     const workbook=new ExcelJS.Workbook();await workbook.xlsx.load(response.rawPayload as unknown as ExcelJS.Buffer);
     assert.deepEqual(workbook.worksheets.map(s=>s.name),['同名商家','说明']);
     const sheet=workbook.getWorksheet('同名商家')!;assert.equal(sheet.getCell('A7').value,'DUP');assert.equal(sheet.getCell('A8').value,'DUP');assert.equal(sheet.getImages().length,2);
-    assert.equal(sheet.getCell('D7').value,12);assert.equal(sheet.getCell('F7').value,24);assert.equal(sheet.getCell('J7').value,.123);
+    assert.equal(sheet.getCell('D7').result,12);assert.equal(sheet.getCell('F7').result,24);assert.equal(sheet.getCell('J7').result,.123);
     const legacy=(await get('/api/products',{date:'2026-10-18',supplier:'同名商家'})).json();assert.equal(legacy.matchedCount,1);assert.equal(legacy.items[0].id,early.id);
     for(const invalid of [{dateFrom:'2026-10-18'},{dateTo:'2026-10-20'},{dateFrom:'2026-10-21',dateTo:'2026-10-20'},{dateFrom:'2026-02-30',dateTo:'2026-10-20'},{...range,date:'2026-10-18'}]) for(const route of ['/api/products','/api/merchants','/api/export-preview','/api/export']) assert.equal((await get(route,invalid,issueSession('range-validation-'+randomUUID()).token)).statusCode,400,route+JSON.stringify(invalid));
     assert.deepEqual(recordDateRangeBounds(undefined,{dateFrom:'2024-02-29',dateTo:'2024-03-01'}),['2024-02-28T16:00:00.000Z','2024-03-01T16:00:00.000Z']);

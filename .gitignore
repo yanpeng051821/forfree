@@ -13,6 +13,10 @@ playwright-report/
 *.xlsx
 *.xls
 *.xlsm
+# Audited synthetic acceptance examples only; real procurement files stay local.
+!docs/examples/product-record-20261024/商品记录-带全部图片.xlsx
+!docs/examples/product-record-20261024/商品记录-纯数据.xlsx
+!docs/examples/product-record-20261024/商品记录-仅已核对.xlsx
 docs/demo/
 docs/screenshots/*.png
 docs/screenshots/*.jpg

@@ -10,17 +10,18 @@ export function productFields(value: Product): ProductFields {
 }
 export function mergeOrganizedProduct(product: Product, result: Extraction): ProductFields {
   const current = productFields(product), next = { ...current };
-  const allowed: (keyof ProductFields)[] = ['name','sku','supplier','supplierContact','colors','material','dimensions','weightG','unitPrice','currency','moq','cartons','quantity','barcode','cartonQty','cartonDimensions','cartonCbm','leadTimeDays','tradeTerms','notes','exportRemarks'];
+  const allowed: (keyof ProductFields)[] = ['name','sku','colors','material','dimensions','weightG','unitPrice','moq','cartons','quantity','barcode','cartonQty','cartonDimensions','cartonCbm','leadTimeDays','tradeTerms','notes','exportRemarks'];
   const ignored = new Set(result.estimates || []);
   for (const key of allowed) {
     if (ignored.has(key)) continue;
+    if (key === 'unitPrice' && result.fields.currency && result.fields.currency !== current.currency) continue;
     const incoming = result.fields[key];
     const empty = next[key] === '' || next[key] === null || (key === 'name' && next.name === '未命名商品');
-    // Default currency can only follow an explicitly extracted price for an unpriced record.
-    if (key === 'currency' ? current.unitPrice !== null || ignored.has('unitPrice') || !result.fields.currency || result.fields.unitPrice == null : !empty) continue;
+    if (!empty) continue;
     if (incoming !== undefined && incoming !== null) Object.assign(next, { [key]: incoming });
   }
-  return fieldsSchema.parse({ ...next, confirmed: false });
+  const changed = allowed.some(key => key !== 'notes' && JSON.stringify(current[key]) !== JSON.stringify(next[key]));
+  return fieldsSchema.parse({ ...next, confirmed: changed ? false : current.confirmed });
 }
 /** A bounded per-owner queue. The job is durable; execution currently lives in one container. */
 export class ProductOrganizeQueue {

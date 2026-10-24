@@ -2,6 +2,7 @@ const { test, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { SaxesParser } = require('saxes');
 // These page lifecycle tests mock the explicit desktop loopback API. Cloud-only
 // production behavior is independently exercised by container-transport.test.cjs.
 const configPath=require.resolve('../miniprogram/config');
@@ -24,7 +25,7 @@ function page(relative) {
   const instance = Object.assign({}, definition, { data: structuredClone(definition.data) });
   instance.route = relative.replace(/\.js$/, ''); currentPages = [instance];
   instance.setData = patch => Object.entries(patch).forEach(([key, value]) => {
-    const keys = key.split('.'); let target = instance.data;
+    const keys = key.replace(/\[(\d+)\]/g,'.$1').split('.'); let target = instance.data;
     for (const part of keys.slice(0, -1)) target = target[part];
     target[keys.at(-1)] = value;
   });
@@ -94,6 +95,7 @@ test('background model login recovers once and retries the same saved product wi
   }finally{api.getJob=getJob;api.request=request;api.restoreModelSession=restore;}
 });
 beforeEach(() => {
+  if (currentPages) currentPages.forEach(instance => draft.release(instance));
   gate.hide();
   storage = new Map(); files = new Set(); removed = []; requests = []; navigations = 0;
   currentPages = []; launches = []; tabChanges = [];
@@ -122,6 +124,143 @@ test('numeric contract keeps unknowns null and rejects guessed or invalid quanti
   assert.equal(domain.validateFields({ name: '杯', unitPrice: '' }).unitPrice, null);
   assert.equal(domain.validateFields({ name: '杯', weightG: '0.3', moq: '100' }).moq, 100);
   for (const change of [{ unitPrice: -1 }, { moq: 1.5 }, { cartonQty: 0 }, { weightG: 'abc' }, { unitPrice: true }]) assert.throws(() => domain.validateFields({ name: '杯', ...change }));
+});
+
+test('ordinary saved-product card restores local changes and photos without an explicit resume link', async()=>{
+  const binding=session.capture(); files.add('/saved/restored');
+  draft.write(binding,PROJECT,PRODUCT,{editId:PRODUCT,version:1,fields:{...domain.emptyFields,name:'本机未保存名字',supplier:'店甲'},photos:[{id:'',path:'/saved/restored',persistent:true}]});
+  const p=page('pages/editor/index.js');p.onLoad({projectId:PROJECT,id:PRODUCT});p._alive=true;p._viewEpoch=1;
+  const original=api.request;
+  api.request=async url=>url.startsWith('/api/products/')?{...domain.emptyFields,id:PRODUCT,projectId:PROJECT,name:'云端名字',version:2,photos:[]}:url==='/api/config'?{modelEnabled:false}:[];
+  try{
+    await p.open();assert.equal(p.data.fields.name,'本机未保存名字');assert.equal(p.data.photos[0].path,'/saved/restored');
+    assert.equal(p.data.restoredDraft,true);assert.match(p.data.notice,/云端版本有变化/);assert.equal(p._version,1);
+    p.onHide();assert.equal(draft.read(binding,PROJECT,PRODUCT).fields.name,'本机未保存名字');assert.ok(files.has('/saved/restored'));
+  }finally{api.request=original;p.onUnload();}
+});
+
+test('saved-version view preserves the exact draft through opening, hiding and save calls', async()=>{
+  const binding=session.capture();
+  draft.write(binding,PROJECT,PRODUCT,{editId:PRODUCT,version:1,fields:{...domain.emptyFields,name:'本机名字'},photos:[]});
+  const before=draft.snapshot(draft.read(binding,PROJECT,PRODUCT));
+  const p=page('pages/editor/index.js');p.onLoad({projectId:PROJECT,id:PRODUCT,saved:'yes'});p._alive=true;p._viewEpoch=1;
+  const original=api.request;const calls=[];
+  api.request=async(url,options)=>{calls.push({url,options});return{...domain.emptyFields,id:PRODUCT,projectId:PROJECT,name:'已保存名字',version:2,photos:[]};};
+  try{
+    await p.open();assert.equal(p.data.readOnly,true);assert.equal(p.data.fields.name,'已保存名字');
+    assert.ok(p.data.savedFields.some(f=>f.value==='已保存名字'));
+    p.input({currentTarget:{dataset:{key:'name'}},detail:{value:'不允许修改'}});p.favorite();p.rate({currentTarget:{dataset:{value:5}}});p.confirm({detail:{value:true}});p.currency({detail:{value:1}});
+    await p.addPhotos();await p.organize();await p.remove();assert.equal(p.data.fields.name,'已保存名字');assert.equal(p.data.fields.confirmed,false);assert.equal(p.data.fields.favorite,false);
+    await p.saveBack();await p.saveNext();await p.discard();p.onHide();p.onShow();p.onUnload();
+    assert.equal(draft.snapshot(draft.read(binding,PROJECT,PRODUCT)),before);assert.equal(calls.length,1);assert.equal(calls[0].options.method,undefined);
+    const markup=fs.readFileSync(path.resolve(__dirname,'../miniprogram/pages/editor/index.wxml'),'utf8');
+    assert.match(markup,/ready && readOnly/);assert.match(markup,/ready && !readOnly/);
+  }finally{api.request=original;draft.release(p);}
+});
+
+test('draft compare-and-swap refuses stale writes and deletion without touching newer photos',()=>{
+  const binding=session.capture();files.add('/saved/newer');
+  const old=draft.write(binding,PROJECT,PRODUCT,{fields:{name:'旧稿'},photos:[]});
+  draft.write(binding,PROJECT,PRODUCT,{fields:{name:'新稿'},photos:[{path:'/saved/newer',persistent:true}]});
+  assert.throws(()=>draft.write(binding,PROJECT,PRODUCT,{fields:{name:'过时页'},photos:[]},{expected:draft.snapshot(old)}),e=>e.code==='DRAFT_CHANGED');
+  assert.equal(draft.discard(binding,PROJECT,PRODUCT,{expected:draft.snapshot(old)}),false);
+  assert.equal(draft.read(binding,PROJECT,PRODUCT).fields.name,'新稿');assert.ok(files.has('/saved/newer'));
+});
+
+test('draft cleanup protects photos referenced by other drafts, accounts and active editors',()=>{
+  const binding=session.capture(),photo={path:'/saved/shared',persistent:true};files.add(photo.path);
+  draft.write(binding,PROJECT,'one',{fields:{name:'一'},photos:[photo]});
+  draft.write(binding,PROJECT,'two',{fields:{name:'二'},photos:[photo]});
+  draft.discard(binding,PROJECT,'one');assert.ok(files.has(photo.path));
+  const holder={};draft.protect(holder,binding,[photo]);draft.discard(binding,PROJECT,'two');assert.ok(files.has(photo.path));
+  draft.release(holder);
+  const foreignKey=draft.key('bob',PROJECT,'foreign');
+  storage.set(foreignKey,{format:1,owner:'bob',projectId:PROJECT,fields:{name:'别的账号'},photos:[photo]});
+  draft.releaseFiles([photo]);assert.ok(files.has(photo.path));
+  storage.delete(foreignKey);draft.releaseFiles([photo]);assert.equal(files.has(photo.path),false);
+});
+
+test('uncertain draft references or failed storage access prevent photo deletion',()=>{
+  const binding=session.capture(),photo={path:'/saved/uncertain',persistent:true};files.add(photo.path);
+  const brokenKey=draft.key(binding.owner,PROJECT,'broken');
+  storage.set(brokenKey,{photos:'unreadable'});
+  draft.releaseFiles([photo]);assert.ok(files.has(photo.path));storage.delete(brokenKey);
+  const original=wx.getStorageInfoSync;wx.getStorageInfoSync=()=>{throw new Error('storage inaccessible');};
+  try{draft.releaseFiles([photo]);assert.ok(files.has(photo.path));}finally{wx.getStorageInfoSync=original;}
+  draft.releaseFiles([photo]);assert.equal(files.has(photo.path),false);
+});
+
+test('offline card reopening keeps its saved local draft and rejects a mismatched product identity',async()=>{
+  const binding=session.capture(),original=api.request;
+  draft.write(binding,PROJECT,PRODUCT,{editId:PRODUCT,version:1,fields:{...domain.emptyFields,name:'离线修改'},photos:[]});
+  const p=page('pages/editor/index.js');p.onLoad({projectId:PROJECT,id:PRODUCT});p._alive=true;p._viewEpoch=1;
+  api.request=async()=>{throw new Error('offline');};
+  try{
+    await p.open();assert.equal(p.data.ready,true);assert.equal(p.data.fields.name,'离线修改');p.onUnload();
+    draft.write(binding,PROJECT,PRODUCT,{editId:PROJECT,version:1,fields:{...domain.emptyFields,name:'其他商品'},photos:[]});
+    const before=draft.snapshot(draft.read(binding,PROJECT,PRODUCT));
+    const other=page('pages/editor/index.js');other.onLoad({projectId:PROJECT,id:PRODUCT});other._alive=true;other._viewEpoch=1;
+    await other.open();assert.equal(other.data.ready,false);assert.equal(other.data.draftBroken,true);
+    assert.equal(draft.snapshot(draft.read(binding,PROJECT,PRODUCT)),before);other.onUnload();
+  }finally{api.request=original;draft.release(p);}
+});
+
+test('changed page templates are structurally valid and help links use ordinary settings',()=>{
+  for(const name of ['editor','projects','products','help']){
+    const source=fs.readFileSync(path.resolve(__dirname,'../miniprogram/pages/'+name+'/index.wxml'),'utf8'),errors=[];
+    const parser=new SaxesParser({xmlns:false});parser.on('error',error=>errors.push(error.message));
+    // WXML allows comparison operators inside expressions; normalize those
+    // attributes and boolean properties before checking XML tag structure.
+    parser.write(source.replace(/\s(scroll-x|enhanced|wx:else|auto-height)(?=\s|\/?>)/g,' $1="true"').replace(/&/g,'&amp;').replace(/"[^"]*"/g,value=>value.replace(/</g,'&lt;'))).close();
+    assert.deepEqual(errors,[],name);
+  }
+  const help=fs.readFileSync(path.resolve(__dirname,'../miniprogram/pages/help/index.wxml'),'utf8');
+  assert.match(help,/设置 → 草稿箱/);assert.doesNotMatch(help,/我的 →|在录入页也可点“换店”/);
+});
+
+test('save completion keeps a concurrently newer draft and refuses a later stale-page save',async()=>{
+  const binding=session.capture(),p=editor();p._draftProductId=PRODUCT;p._productId=PRODUCT;p._version=1;p.stash();
+  const original=api.request;let complete;
+  api.request=()=>new Promise(resolve=>{complete=resolve;});
+  try{
+    const saving=p.save();await new Promise(resolve=>setImmediate(resolve));
+    draft.write(binding,PROJECT,PRODUCT,{editId:PRODUCT,version:1,fields:{...domain.emptyFields,name:'较新本机修改',supplier:'店甲'},photos:[]});
+    complete({...p.data.fields,id:PRODUCT,projectId:PROJECT,version:2,photos:[]});await saving;
+    assert.equal(draft.read(binding,PROJECT,PRODUCT).fields.name,'较新本机修改');
+    p.setData({ready:true});let writes=0;api.request=async()=>{writes++;};await p.save();assert.equal(writes,0);
+    assert.equal(draft.read(binding,PROJECT,PRODUCT).fields.name,'较新本机修改');
+  }finally{api.request=original;p.onUnload();}
+});
+
+test('new item name can come from SKU or description with AI disabled; empty products cannot save',async()=>{
+  const original=api.request;const sent=[];
+  api.request=async(url,options)=>{sent.push(options.data);return{...options.data.fields,id:PRODUCT,projectId:PROJECT,version:1,photos:[]};};
+  try{
+    for(const values of [{sku:'REF-001'},{description:'现场原话'}]){
+      const p=editor();p.setData({fields:{...domain.emptyFields,supplier:'店甲',...values},autoOrganize:false});
+      await p.save();assert.equal(sent.at(-1).fields.name,values.sku || '未命名商品');p.onUnload();
+    }
+    const p=editor();p.setData({fields:{...domain.emptyFields,supplier:'店甲'},autoOrganize:false});
+    await p.save();assert.equal(sent.length,2);assert.equal(p.data.fieldError.key,'name');p.onUnload();
+  }finally{api.request=original;}
+});
+
+test('corrupt saved-product draft can be explicitly discarded with snapshot protection',async()=>{
+  const binding=session.capture(),storageKey=draft.key(binding.owner,PROJECT,PRODUCT);
+  storage.set(storageKey,{format:99,owner:binding.owner,projectId:PROJECT,photos:[]});
+  const p=page('pages/editor/index.js');p.onLoad({projectId:PROJECT,id:PRODUCT});p._alive=true;p._viewEpoch=1;
+  await p.open();assert.equal(p.data.draftBroken,true);await p.discard();assert.equal(storage.has(storageKey),false);
+});
+
+test('two tabs keep settings as an ordinary route reached from either main page',()=>{
+  const manifest=JSON.parse(fs.readFileSync(path.resolve(__dirname,'../miniprogram/app.json'),'utf8'));
+  assert.deepEqual(manifest.tabBar.list.map(tab=>tab.text),['商户','商品']);
+  assert.ok(manifest.pages.includes('pages/me/index'));assert.ok(!manifest.tabBar.list.some(tab=>tab.pagePath==='pages/me/index'));
+  const urls=[];wx.navigateTo=options=>urls.push(options.url);
+  for(const route of ['pages/projects/index.js','pages/products/index.js']){
+    const p=page(route);p.settings();assert.equal(urls.at(-1),'/pages/me/index');
+  }
+  assert.equal(JSON.parse(fs.readFileSync(path.resolve(__dirname,'../miniprogram/pages/me/index.json'),'utf8')).navigationBarTitleText,'设置');
 });
 
 function procurementDoc() {
@@ -181,8 +320,65 @@ test('从Excel读取公司模板不会创建采购记录或自动保存，换账
 });
 test('AI merge never overwrites user values or converts unknowns into estimates', () => {
   const result = domain.mergeExtraction({ ...domain.emptyFields, name: '人工名称', unitPrice: 12 }, { name: 'AI名称', unitPrice: 15, weightG: null, moq: 100, supplier: '明确商户' });
-  assert.equal(result.fields.name, '人工名称'); assert.equal(result.fields.unitPrice, 12); assert.equal(result.fields.weightG, null); assert.equal(result.fields.moq, 100); assert.equal(result.fields.supplier, '明确商户');
+  assert.equal(result.fields.name, '人工名称'); assert.equal(result.fields.unitPrice, 12); assert.equal(result.fields.weightG, null); assert.equal(result.fields.moq, 100); assert.equal(result.fields.supplier, '');
   assert.deepEqual(result.conflicts, ['name', 'unitPrice']);
+});
+
+test('confirmed records preserve notes, preferences, photo order and no-op values but revoke actual facts',()=>{
+  const p=editor();p.setData({'fields.confirmed':true,'fields.unitPrice':12,photos:[{id:domain.uuid()},{id:domain.uuid()}]});
+  for(const [key,value]of [['notes','待问事项'],['description','现场原话'],['evaluation','个人判断'],['unitPrice','12']]){
+    p.input({currentTarget:{dataset:{key}},detail:{value}});assert.equal(p.data.fields.confirmed,true,key);
+  }
+  p.mainPhoto({currentTarget:{dataset:{index:1}}});assert.equal(p.data.fields.confirmed,true);
+  p.input({currentTarget:{dataset:{key:'unitPrice'}},detail:{value:'13'}});assert.equal(p.data.fields.confirmed,false);assert.match(p.data.confirmNotice,/重新核对/);
+});
+
+test('fold preferences are per account; restoring folded values is non-destructive',()=>{
+  const p=editor();p.restoreFolds();assert.equal(p.data.detailsOpen,false);assert.equal(p.data.evaluationOpen,false);
+  p.toggleDetails();const next=editor();next.restoreFolds();assert.equal(next.data.detailsOpen,true);
+  install('bob','b');const other=editor();other.restoreFolds();assert.equal(other.data.detailsOpen,false);
+});
+
+test('return to item 40 re-fetches both loaded pages and preserves search status and anchor',async()=>{
+  const p=page('pages/products/index.js'),binding=session.capture(),original=api.request;
+  const items=Array.from({length:60},(_,i)=>({...domain.emptyFields,id:domain.uuid(),projectId:PROJECT,version:1,name:'商品'+i,photos:[],createdAt:'2026-10-24T00:00:00Z'}));
+  p._binding=binding;p._activeId='';p._alive=true;p._seq=1;p._coverCache=new Map();p.setData({viewMode:'day',dateMode:'day',date:'2026-10-24',query:'商品',status:'all',products:items});
+  p._returnState={binding,activeId:'',key:p.viewKey(),count:60,scroll:1200,anchor:{id:items[39].id,neighbor:items[40].id,top:20}};
+  const calls=[],scroll=[];wx.pageScrollTo=o=>scroll.push(o.scrollTop);
+  api.request=async url=>{
+    calls.push(url);
+    if(url.startsWith('/api/merchants'))return[];
+    if(url.includes('limit=1&'))return{summary:{total:60},matchedCount:60};
+    const second=url.includes('cursor=second');return{items:items.slice(second?30:0,second?60:30).map(item=>item.id===items[39].id?{...item,name:'商品39修改',version:2}:item),nextCursor:second?null:'second',matchedCount:60};
+  };
+  try{
+    await p.load(true);assert.equal(p.data.products.length,60);assert.equal(p.data.products[39].name,'商品39修改');assert.equal(p.data.query,'商品');assert.equal(p.data.status,'all');
+    assert.equal(calls.filter(url=>url.includes('limit=30')).length,2);assert.deepEqual(scroll,[1200]);
+    assert.equal(p._returnState,null);
+  }finally{api.request=original;clearTimeout(p._organizeTimer);store.files.release(p);}
+});
+
+test('range list comparison/export share endpoints and range capture returns to merchants',async()=>{
+  const p=page('pages/products/index.js');p._activeId=PROJECT;p.setData({viewMode:'day',dateMode:'range',dateFrom:'2026-10-18',dateTo:'2026-10-24',supplier:'店甲'});
+  assert.equal(p.scopeQuery(),'dateFrom=2026-10-18&dateTo=2026-10-24&supplier='+encodeURIComponent('店甲'));
+  assert.equal(p.comparisonScope(),'range:2026-10-18:2026-10-24:supplier:"店甲"');
+  let url;p.tasks=()=>url='merchants';await p.add();assert.equal(url,'merchants');
+  wx.navigateTo=o=>url=o.url;p.export();assert.equal(url,'/pages/export/index?'+p.scopeQuery());
+  p.load=()=>{};p.dateChange({detail:{value:'2026-10-19'}});assert.equal(p.data.dateMode,'day');
+});
+
+test('200 detailed products render compact view models under 256KiB per bridge update, without three full copies',()=>{
+  const p=page('pages/products/index.js'),products=Array.from({length:200},(_,i)=>({...domain.emptyFields,id:domain.uuid(),supplier:'店甲',name:'商品'+i,photos:[{id:domain.uuid()}],description:'现场原话'.repeat(1900),notes:'内部说明'.repeat(1200),evaluation:'个人评价'.repeat(1200),custom:{packing:'包装'.repeat(900)},createdAt:'2026-10-24T00:00:00Z'}));
+  const updates=[],setData=p.setData;p.setData=patch=>{updates.push(structuredClone(patch));setData(patch);};
+  p.publish({products});p.filter();
+  assert.equal(p.data.products.length,200);assert.equal(p.data.products[0].description,products[0].description);
+  assert.equal(p.data.items.length,200);assert.equal(p.data.items[0].notes,products[0].notes);
+  assert.ok(updates.length>0);assert.ok(updates.every(update=>Buffer.byteLength(JSON.stringify(update))<=256*1024));
+  for(const update of updates){
+    assert.equal(Object.hasOwn(update,'products'),false);
+    assert.equal(JSON.stringify(update).includes('现场原话'),false);
+  }
+  store.files.release(p);
 });
 test('request key is stable for identical semantic payload and changes for edited values', () => {
   const a = domain.requestFor({ name: '杯', price: 12 });
@@ -459,12 +655,12 @@ test('media picker survives temporary page hiding in both callback orders and di
   }
 });
 
-test('explicit extracted currency replaces an untouched default but preserves a chosen currency', async () => {
+test('explicit extracted currency never changes the current currency and mismatch does not fill price', async () => {
   const original = api.request;
   api.request = async () => ({ fields: { unitPrice: 12, currency: 'USD' }, warning: '请核对' });
   try {
     const p = editor(); p.setData({ fields: { ...domain.emptyFields, name: '杯子', description: '12美元' } });
-    await p.organize(); assert.equal(p.data.fields.currency, 'USD'); assert.equal(p.data.fields.unitPrice, 12);
+    await p.organize(); assert.equal(p.data.fields.currency, 'CNY'); assert.equal(p.data.fields.unitPrice, null);assert.match(p.data.notice,/币种/);
     const selected = editor(); selected.setData({ 'fields.description': '12美元' }); selected.currency({ detail: { value: 2 } });
     await selected.organize(); assert.equal(selected.data.fields.currency, 'EUR'); assert.match(selected.data.notice, /币种/);
   } finally { api.request = original; }
@@ -715,7 +911,7 @@ test('favorites opens from my page and history navigation stays isolated by acco
     const products = page('pages/products/index.js'); await products.load(); assert.equal(products.data.viewMode, 'day');
     const favorites = page('pages/favorites/index.js'); store.selectProject(session.capture(), PROJECT); await favorites.load();
     assert.equal(favorites.data.viewMode, 'favorites'); assert.equal(favorites.scopeQuery(), 'favorite=yes');
-    me.review(); install('bob', 'b'); const another = page('pages/products/index.js'); await another.load(); assert.equal(another.data.viewMode, 'task');
+    me.review(); install('bob', 'b'); const another = page('pages/products/index.js'); await another.load(); assert.equal(another.data.viewMode, 'day');
   } finally { api.request = original; }
 });
 

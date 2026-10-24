@@ -13,20 +13,25 @@ const specs = [
 const groupKeys = { quote: ['unitPrice', 'currency', 'tradeTerms', 'moq', 'cartonQty', 'leadTimeDays'], specs: ['cartonCbm', 'cartonDimensions', 'dimensions', 'weightG', 'material', 'colors'], records: ['rating', 'evaluation', 'sku', 'supplierContact', 'notes', 'description'] };
 Page(kit.protectedPage({
   data: { items: [], rows: [], visibleRows: [], activeGroup: 'quote', onlyDifferences: false, differenceCount: 0, quoteHint: '', groups: [{ key: 'quote', label: '报价' }, { key: 'specs', label: '规格包装' }, { key: 'records', label: '现场记录' }], loading: false, error: '' },
-  onLoad(options) { this._projectId = options.projectId; this._date = options.date; this._favorites = options.favorite === 'yes';this._supplier=options.supplier;try{if(this._supplier!==undefined)this._supplier=decodeURIComponent(this._supplier);}catch(_){} },
-  onShow() { this.load(); }, onHide() { kit.stop(this); }, onUnload() { kit.stop(this); },
+  onShow() { this.load(); }, onHide() { kit.stop(this); }, onUnload() { if(store.files)store.files.release(this);kit.stop(this); },
+  onLoad(options) {
+    this._projectId=options.projectId;this._date=options.date;this._favorites=options.favorite==='yes';this._supplier=options.supplier;
+    this._dateFrom=options.dateFrom;this._dateTo=options.dateTo;
+    try{if(this._supplier!==undefined)this._supplier=decodeURIComponent(this._supplier);}catch(_){}
+  },
   async load() {
     if (!kit.requireLogin(this)) return;
     const seq = kit.start(this);
     this.setData({ items: [], rows: [], visibleRows: [], quoteHint: '', differenceCount: 0, error: '', loading: true });
     try {
-      const binding = session.capture(), ids = store.compareSelection(binding,store.comparisonScope({projectId:this._projectId,date:this._date,favorite:this._favorites,supplier:this._supplier}));
+      const binding = session.capture(), ids = store.compareSelection(binding,store.comparisonScope({projectId:this._projectId,date:this._date,dateFrom:this._dateFrom,dateTo:this._dateTo,favorite:this._favorites,supplier:this._supplier}));
       if (ids.length !== 2) throw new Error('请返回商品列表，选择两件商品进行对比');
       const items = await Promise.all(ids.map(async id => {
         const product = await api.request('/api/products/' + encodeURIComponent(id), { identity: binding });
-        if (this._date ? domain.chinaLocalDate(product.createdAt) !== this._date : this._favorites ? !product.favorite : product.projectId !== this._projectId) throw new Error('商品不属于当前回顾范围');
+        const date=domain.chinaLocalDate(product.createdAt);
+        if (this._dateFrom ? date<this._dateFrom || date>this._dateTo : this._date ? date !== this._date : this._favorites ? !product.favorite : product.projectId !== this._projectId) throw new Error('商品不属于当前回顾范围');
         if(product.deletedAt || (this._supplier!==undefined && product.supplier!==this._supplier))throw new Error('商品不属于当前回顾范围');
-        const photos = await store.hydratePhotos(product.photos.slice(0, 1), binding);
+        const photos = await store.hydratePhotos(product.photos.slice(0, 1), binding, this);
         return Object.assign({}, domain.productView(product), { cover: photos[0] && photos[0].path || '' });
       }));
       if (!kit.current(this, binding, seq)) return;
@@ -39,7 +44,7 @@ Page(kit.protectedPage({
         return { key, label, values, different: key === 'unitPrice' ? (values[0].missing !== values[1].missing || (!values[0].missing && Number(items[0].unitPrice) !== Number(items[1].unitPrice))) : values[0].text !== values[1].text };
       });
       const quoteHint = items[0].currency !== items[1].currency ? '币种不同，单价需换算后比较' : !items[0].tradeTerms || !items[1].tradeTerms ? '报价条款待补，单价仅供参考' : items[0].tradeTerms !== items[1].tradeTerms ? '报价条款不同，先确认费用范围' : '币种与已填写条款一致';
-      this.setData({ items, rows, quoteHint }); this.refreshRows();
+      this.setData({ items, rows, quoteHint });if(store.files)store.files.protect(this,items.map(item=>item.cover)); this.refreshRows();
     } catch (e) {
       if (!this._alive || this._seq !== seq) return;
       kit.message(this, e);

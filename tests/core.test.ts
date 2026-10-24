@@ -1,3 +1,4 @@
+import { effective } from "./excel-value";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -81,9 +82,9 @@ test("persists owned products and photos, exports literal text, and deletes",asy
   const selectedCell = (key: string) => { const index = metadata.columns.findIndex(column => column.key === key); assert.ok(index >= 0, key); return selectedSheet.getRow(header + 1).getCell(index + 1); };
   assert.equal(selectedCell('description').value, '=HYPERLINK("bad") / 白 / 陶瓷 / 高15cm');
   assert.equal(selectedCell('description').formula, undefined); assert.equal(selectedCell('unitPrice').value, 15);
-  assert.equal(selectedCell('quantity').value, null); assert.equal(selectedCell('amount').value, null);
+  assert.equal(effective(selectedCell('quantity')), null); assert.equal(effective(selectedCell('amount')), null);
   assert.equal(selectedSheet.getImages().length, 1); assert.equal(metadata.columns.some(column => column.businessField), false);
-  let text = ''; selection.eachSheet(s => s.eachRow(row => row.eachCell(c => { text += c.text; if(c.formula) assert.match(c.formula, /^IF\(COUNT\([A-Z][0-9]+(?::[A-Z][0-9]+)?(?:,[A-Z][0-9]+(?::[A-Z][0-9]+)?)*\)=[0-9]+,SUM\([A-Z][0-9]+(?::[A-Z][0-9]+)?(?:,[A-Z][0-9]+(?::[A-Z][0-9]+)?)*\),""\)$/); })));
+  let text = ''; selection.eachSheet(s => s.eachRow(row => row.eachCell(c => { text += c.text; if(c.formula) assert.match(c.formula, /^IF\(COUNT\([A-Z][0-9]+(?::[A-Z][0-9]+)?(?:,[A-Z][0-9]+(?::[A-Z][0-9]+)?)*\)=[0-9]+,(?:SUM\([A-Z][0-9]+(?::[A-Z][0-9]+)?(?:,[A-Z][0-9]+(?::[A-Z][0-9]+)?)*\)|[A-Z][0-9]+\*[A-Z][0-9]+),""\)$/); })));
   for (const secret of [fields.notes, fields.description, fields.supplierContact]) assert.equal(text.includes(secret), false, secret);
   const explicitOptions = { images: false, audience: 'internal' as const, businessFields: ['name', 'moq', 'notes'] as const };
   const explicit = new ExcelJS.Workbook();

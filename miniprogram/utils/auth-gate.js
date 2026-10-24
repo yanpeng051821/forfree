@@ -1,7 +1,7 @@
 const session = require('./session');
 const LOGIN = 'pages/login/index';
 const HOME = 'pages/projects/index';
-const TABS = [HOME, 'pages/products/index', 'pages/me/index'];
+const TABS = [HOME, 'pages/products/index'];
 let redirecting = false;
 let timer = null;
 let watching = false;

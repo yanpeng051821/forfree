@@ -1,3 +1,4 @@
+import { effective } from "./excel-value";
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -132,7 +133,7 @@ test("shared-model workflow covers multi-photo records, replay, edit, XLSX and l
     assert.equal(rows.length, 1); assert.equal(sheet.getImages().length, command.photoIds.length);
     const row = sheet.getRow(header + 1);
     assert.equal(row.getCell(descriptionColumn).value, [command.fields.name, command.fields.colors, command.fields.material, command.fields.dimensions].filter(Boolean).join(' / '));
-    const value = (label: string) => { const column = columns.indexOf(label); assert.ok(column > 0); return row.getCell(column).value; };
+    const value = (label: string) => { const column = columns.indexOf(label); assert.ok(column > 0); return effective(row.getCell(column)); };
     assert.equal(value(label('unitPrice')), 15); assert.equal(value(label('quantity')), null);
     assert.equal(value(label('amount')), null); assert.equal(value(label('pcsPerCarton')), command.fields.cartonQty ?? null);
     assert.ok(!columns.includes('商品名称')); assert.ok(!columns.includes('起订量（非采购数量）')); assert.ok(!columns.includes('币种'));

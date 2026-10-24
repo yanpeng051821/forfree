@@ -43,6 +43,7 @@ Page(kit.protectedPage({
     finally { if (this._alive && this._seq === seq) this.setData({ loading: false }); }
   },
   login: kit.loginPage,
+  settings() { if (kit.requireLogin(this) && !this._saving) wx.navigateTo({url:'/pages/me/index'}); },
   filterDates() {
     const dateCounts = {};
     this.data.projects.forEach(project => { dateCounts[project.date] = (dateCounts[project.date] || 0) + 1; });

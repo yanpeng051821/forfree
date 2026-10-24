@@ -15,3 +15,4 @@ button::after{border:0}button.primary{background:#202226;color:#fff}button.secon
 
 /* Feedback is visible on contact; busy and confirmed states remain distinct. */
 button{transition:background-color 100ms,transform 100ms,opacity 100ms}.button-pressed{transform:scale(.975);opacity:.85}.press{opacity:.82;background-color:rgba(99,128,108,.08)}.icon-button{transition:background-color 100ms,transform 100ms}.icon-button.press{background:#e2eae4;transform:scale(.92)}.row-pressed{background:#eaf0ec}.control-pressed{background:#dce7de;transform:scale(.97)}
+.page-settings-row{display:flex;justify-content:flex-end;margin-bottom:8rpx}.page-settings-button{margin:0;min-height:88rpx;min-width:88rpx;padding:0 18rpx;display:flex;align-items:center;justify-content:center;background:transparent;color:#263b32;font-size:26rpx;border-radius:12rpx}.page-settings-button::after{border:0}

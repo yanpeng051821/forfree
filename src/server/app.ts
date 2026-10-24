@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import sharp from "sharp";
 import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -386,11 +386,11 @@ export async function createApp(options: {
         } catch (error) { activeExports.delete(owner); throw error; }
       });
       // 文件独立分段读取，每次二进制响应有上限，可由容器通道下载完整Excel。
-      type CachedExport = { owner: string; bytes: Buffer; expiresAt: number };
+      type CachedExport = { owner: string; bytes: Buffer; expiresAt: number; sha256: string; chunks: string[] };
       const exports = new Map<string, CachedExport>();
       secured.get('/api/jobs/:jobId/file', { config: { rateLimit: { max: 60, timeWindow: '1 minute', groupId: 'export-file', keyGenerator: ownerRateKey } } }, async (req, reply) => {
         const { jobId } = jobParamsSchema.parse(req.params), owner = session(req).owner;
-        const query = z.strictObject({ offset: z.coerce.number().int().min(0).optional() }).parse(req.query);
+        const query = z.strictObject({ offset: z.coerce.number().int().min(0).optional(), protocol: z.coerce.number().int().refine(value=>value===2).optional() }).parse(req.query);
         const jobs = scopedJobs(req), job = await jobs.get(owner, jobId);
         if (!['product-export', 'workbook-export'].includes(job.kind) || job.state !== 'succeeded') throw new AppError('NOT_FOUND', '文件尚未生成或不可访问', 404);
         const now = Date.now(), key = owner + ':' + jobId;
@@ -399,12 +399,17 @@ export async function createApp(options: {
         if (!cached) {
           const bytes = await jobs.downloadFile(owner, jobId);
           if (bytes.length > 80 * 1024 * 1024) throw new AppError('EXPORT_LIMIT', '导出文件超过80MB，请减少带图商品数量', 413);
-          cached = { owner, bytes, expiresAt: now + 120000 };
+          const chunks: string[] = [];
+          for(let offset=0;offset<bytes.length;offset+=655360)chunks.push(createHash('sha256').update(bytes.subarray(offset,offset+655360)).digest('hex'));
+          cached = { owner, bytes, expiresAt: now + 120000, sha256:createHash('sha256').update(bytes).digest('hex'), chunks };
           if (exports.size < 2) exports.set(key, cached);
         }
-        if (query.offset === undefined) return { size: cached.bytes.length, chunkSize: 4 * 1024 * 1024 };
+        if (query.offset === undefined) return query.protocol===2
+          ? {protocol:2,jobId,size:cached.bytes.length,chunkSize:655360,chunkCount:cached.chunks.length,sha256:cached.sha256,chunkHashes:cached.chunks}
+          : { size: cached.bytes.length, chunkSize: 4 * 1024 * 1024 };
         if (query.offset >= cached.bytes.length) throw new AppError('VALIDATION', '文件读取位置无效', 400);
-        return reply.type('application/octet-stream').send(cached.bytes.subarray(query.offset, query.offset + 4 * 1024 * 1024));
+        if(query.protocol===2 && query.offset%655360!==0)throw new AppError('VALIDATION','文件分块位置无效',400);
+        return reply.type('application/octet-stream').send(cached.bytes.subarray(query.offset, query.offset + (query.protocol===2?655360:4 * 1024 * 1024)));
       });
     }
     const profile = (req: FastifyRequest) => cloud ? new CloudRecords(cloud.db, cloud.blobs, session(req)).getProfile(session(req).owner) : getProfile(session(req).owner);
@@ -438,7 +443,7 @@ export async function createApp(options: {
       const { requestKey, ...fields } = createProjectSchema.parse(req.body);
       return reply.code(201).send(await scopedService(req).records.createProject(session(req).owner, fields, requestKey));
     });
-    secured.get('/api/capabilities', async req => cloud ? new CloudRecords(cloud.db, cloud.blobs, session(req)).capabilities(session(req).owner) : { dateRangeExport: true });
+    secured.get('/api/capabilities', async req => ({...(cloud ? await new CloudRecords(cloud.db, cloud.blobs, session(req)).capabilities(session(req).owner) : { dateRangeExport: true }), exportFileV2: !!cloud}));
     secured.get('/api/record-days', async req => cloud ? await new CloudRecords(cloud.db, cloud.blobs, session(req)).recordDays(session(req).owner) : recordDays(session(req).owner));
     secured.post('/api/products/:id/favorite', async req => { const { favorite, version } = favoriteSchema.parse(req.body); return cloud ? await new CloudRecords(cloud.db, cloud.blobs, session(req)).setFavorite(session(req).owner, idParamsSchema.parse(req.params).id, favorite, version) : setFavorite(session(req).owner, idParamsSchema.parse(req.params).id, favorite, version); });
     secured.get("/api/products", async req => {
@@ -550,8 +555,9 @@ export async function createApp(options: {
       const name = staged.name.trim() || "photo.jpg";
       return withPhotoUpload(owner, async () => reply.code(201).send(await savePhoto(req, owner, name, mimetype, bytes)));
     });
-    secured.get("/api/photos/:id", async (req, reply) => reply.type("image/jpeg").send(await scopedService(req).records.readPhoto(session(req).owner, idParamsSchema.parse(req.params).id)));
-    secured.get('/api/photos/:id/thumbnail', async (req,reply) => {
+    const photoReadLimit = { max: 360, timeWindow: '1 minute', groupId: 'photo-read', keyGenerator: ownerRateKey };
+    secured.get("/api/photos/:id", {config:{rateLimit:photoReadLimit}}, async (req, reply) => reply.type("image/jpeg").send(await scopedService(req).records.readPhoto(session(req).owner, idParamsSchema.parse(req.params).id)));
+    secured.get('/api/photos/:id/thumbnail', {config:{rateLimit:photoReadLimit}}, async (req,reply) => {
       const bytes=await scopedService(req).records.readPhoto(session(req).owner,idParamsSchema.parse(req.params).id);
       const thumbnail=await sharp(bytes).resize({width:480,height:480,fit:'inside',withoutEnlargement:true}).jpeg({quality:70}).toBuffer();
       return reply.header('Cache-Control','private, max-age=3600').type('image/jpeg').send(thumbnail);

@@ -9,7 +9,8 @@ const jobs = require('../../utils/jobs');
 const background = require('../../utils/background-organize');
 const captureTemplate = require('../../utils/capture-template');
 const merchants = require('../../utils/merchant-context');
-const names = { cartons:'箱数',quantity:'采购数量',barcode:'条码',custom:'扩展字段',exportRemarks:'对外备注', name: '商品名称', sku: '货号', colors: '颜色', material: '材质', dimensions: '尺寸', weightG: '单件重量', unitPrice: '单价', currency: '币种', moq: '起订量', cartonQty: '每箱数量', cartonDimensions: '外箱尺寸', cartonCbm: '单箱体积', leadTimeDays: '大货交期', tradeTerms: '报价条款' };
+const fileCache=require('../../utils/file-cache');
+const names = { cartons:'箱数',quantity:'记录数量',barcode:'条码',custom:'扩展字段',exportRemarks:'商品说明 / 表格备注', name: '商品名称', sku: '货号', colors: '颜色', material: '材质', dimensions: '尺寸', weightG: '单件重量', unitPrice: '单价', currency: '币种', moq: '起订量', cartonQty: '每箱数量', cartonDimensions: '外箱尺寸', cartonCbm: '单箱体积', leadTimeDays: '大货交期', tradeTerms: '报价条款' };
 function withPhotoKeys(photos) {
   return (photos || []).map((photo, index) => Object.assign({}, photo, { viewKey: photo.viewKey || (photo.id ? 'remote:' + photo.id : photo.path ? 'local:' + photo.path : 'missing:' + index) }));
 }
@@ -19,7 +20,9 @@ Page(kit.protectedPage({
     this._unloaded = false;
     this._projectId = options.projectId;
     this._productId = options.id || '';
-    this._resumeDraft = options.resume === 'yes' || options.draftId !== undefined;
+    this._readOnly = options.saved === 'yes' && !!this._productId;
+    this.setData({ readOnly: this._readOnly, restoredDraft: false, savedFields: [] });
+    this._resumeDraft = !this._readOnly && (!!this._productId || options.resume === 'yes' || options.draftId !== undefined);
     this._draftProductId = this._resumeDraft ? (options.draftId || this._productId) : (this._productId || domain.uuid());
     this._revision = 0; this._retired = [];
     try { const info=session.info();if(info){const preference=wx.getStorageSync('huoji.autoOrganize.'+info.user.id);this.setData({autoOrganize:preference!==false});}} catch(_) {}
@@ -32,18 +35,19 @@ Page(kit.protectedPage({
     this.setData({ saving: false, recognizing: false });
     if (this._opening && this._openingEpoch !== this._viewEpoch) this._opening = false;
     if (this._binding && !session.valid(this._binding)) {
+      draft.release(this);fileCache.release(this);
       if (this._photoChoice && this._photoChoice.photos) this._photoChoice.photos.forEach(draft.removeFile);
       this._photoChoice = null; this._choosing = false;
       this.setData({ fields: Object.assign({}, domain.emptyFields), photos: [], suppliers: [], ready: false, error: '账号已变化，请返回重新打开' });
       return;
     }
     this.applyChosenPhotos();
-    if(this._initialized && !this._templateLoaded)this.loadCaptureTemplate(this._viewEpoch);
-    if(this._initialized && this._productId)this.checkSavedState(this._viewEpoch);
+    if(this._initialized && !this._readOnly && !this._templateLoaded)this.loadCaptureTemplate(this._viewEpoch);
+    if(this._initialized && !this._readOnly && this._productId)this.checkSavedState(this._viewEpoch);
     if (!this._initialized && !this._opening) this.open();
   },
   onHide() { this.stash(); this._viewEpoch = (this._viewEpoch || 0) + 1; kit.stop(this); },
-  onUnload() { this.stash(); this._unloaded = true; if (this._photoChoice && this._photoChoice.photos) this._photoChoice.photos.forEach(draft.removeFile); this._photoChoice = null; this._viewEpoch = (this._viewEpoch || 0) + 1; kit.stop(this); },
+  onUnload() { this.stash(); this._unloaded = true; draft.release(this);fileCache.release(this); if (this._photoChoice && this._photoChoice.photos) this._photoChoice.photos.forEach(draft.removeFile); this._photoChoice = null; this._viewEpoch = (this._viewEpoch || 0) + 1; kit.stop(this); },
   valid(viewEpoch) { return this._alive && session.valid(this._binding) && (viewEpoch === undefined || viewEpoch === this._viewEpoch); },
   confirmAction(title, content, confirmText, cancelText) {
     return new Promise(resolve => wx.showModal({ title, content, confirmText, cancelText, confirmColor: '#245c46', success: res => resolve(res.confirm === true), fail: () => resolve(false) }));
@@ -55,11 +59,19 @@ Page(kit.protectedPage({
     try {
       this._binding = session.capture();
       if (!/^[a-f0-9-]{36}$/.test(this._projectId || '')) { this.requireMerchant(); return; }
+      if (!this._readOnly) this._draftToken = draft.snapshot(wx.getStorageSync(draft.key(this._binding.owner, this._projectId, this._draftProductId)));
       const saved = this._resumeDraft ? draft.read(this._binding, this._projectId, this._draftProductId) : null;
       if (this._resumeDraft && !saved && !this._productId) { this.requireMerchant('草稿已不存在，请从商户重新记录'); return; }
       if (saved) {
+        if(this._productId && saved.editId && saved.editId !== this._productId) throw session.error('DRAFT_PRODUCT_MISMATCH','草稿对应的是其他商品，本页未修改草稿');
         if(saved.editId || this._productId){
-          try{const existing=await api.request('/api/products/'+encodeURIComponent(saved.editId || this._productId),{identity:this._binding});if(!this.valid(viewEpoch))return;if(existing.deletedAt){this.setData({ready:false,error:'商品在回收站，先恢复后可继续草稿',draftTrashed:true});return;}}catch(e){if(e.code==='LOGIN_REQUIRED' || e.code==='IDENTITY_CHANGED' || e.code==='NOT_FOUND')throw e;}
+          try{
+            const existing=await api.request('/api/products/'+encodeURIComponent(saved.editId || this._productId),{identity:this._binding});
+            if(!this.valid(viewEpoch))return;
+            if(existing.projectId !== this._projectId) throw session.error('DRAFT_PRODUCT_MISMATCH','草稿对应的商品不属于当前商户记录');
+            if(existing.deletedAt){this.setData({ready:false,error:'商品在回收站，先恢复后可继续草稿',draftTrashed:true});return;}
+            this._savedVersion = existing.version;
+          }catch(e){if(e.code==='LOGIN_REQUIRED' || e.code==='IDENTITY_CHANGED' || e.code==='NOT_FOUND' || e.code==='DRAFT_PRODUCT_MISMATCH')throw e;}
         }
         {
           if (!this.valid(viewEpoch)) return;
@@ -74,6 +86,8 @@ Page(kit.protectedPage({
           legacy.forEach(key => { restored[key] = domain.emptyFields[key]; });
           this._captureMerchant = !this._productId && restored.supplier.trim() ? merchants.normalize(restored) : null;
           this.setData({ merchantLocked:!!this._captureMerchant, legacyEstimates: (saved.legacyEstimates || []).concat(legacy.map(key => ({ label: names[key] || key, value: String(saved.fields[key]) }))), notice: legacy.length ? '旧草稿的估算值已移出正式字段，请按现场信息重新填写。' : !this._productId && !restored.supplier.trim() ? '原草稿已保留，请先补全商户再保存' : '', demo: !!saved.demo, fields: restored, photos: withPhotoKeys(saved.photos), estimatedFields: {}, pending: !!this._pending, editing: !!this._productId, ready: true, detailsOpen: false, supplierOpen: true, evaluationOpen: true });
+          this.setData({ restoredDraft: true });
+          if(this._productId && this._savedVersion !== undefined && this._savedVersion !== saved.version) this.setData({ notice:'已恢复本机修改；云端版本有变化，请核对最新版本后保存。' });
         }
       } else if (this._productId) {
         const product = await api.request('/api/products/' + encodeURIComponent(this._productId), { identity: this._binding });
@@ -83,7 +97,7 @@ Page(kit.protectedPage({
         this._version = product.version;
         this._organizeJobId=product.organizeJobId;this._organizeState=product.organizeState;
         if(product.organizeState==='failed')this.setData({notice:product.organizeError||'后台整理未完成，可再次AI整理'});
-        if(product.organizeState==='queued'){
+        if(product.organizeState==='queued' && !this._readOnly){
           const checked=(await background.refresh(this._binding,[product]))[0];
           if(!this.valid(viewEpoch))return;
           if(checked.version>product.version)Object.assign(product,checked);
@@ -93,6 +107,13 @@ Page(kit.protectedPage({
         this._currencyTouched = true;
         this.setData({ demo: !!product.demo, fields: domain.fieldsFrom(product), photos: withPhotoKeys(product.photos.map(p => ({ id: p.id, name: p.name, path: '', persistent: false }))), editing: true, ready: true, detailsOpen: false, supplierOpen: true, evaluationOpen: true });
         this._baseline = this.draftSnapshot();
+        if (this._readOnly) {
+          const labels = Object.assign({name:'商品名称',supplier:'商户',supplierContact:'联系方式',description:'现场描述',notes:'内部备注',evaluation:'个人评价',rating:'评分'},names);
+          const savedFields = Object.keys(labels).filter(key => product[key] !== null && product[key] !== undefined && product[key] !== '' && key !== 'custom')
+            .map(key => ({key,label:labels[key],value:String(product[key])}));
+          Object.entries(product.custom || {}).forEach(([key,value]) => { if(value) savedFields.push({key:'custom:'+key,label:'扩展 · '+key,value}); });
+          this.setData({savedFields});
+        }
       } else {
         this._captureMerchant = this._captureMerchant || merchants.consumeCapture(this._binding, this._projectId);
         if (!this._captureMerchant) { this.requireMerchant(); return; }
@@ -100,14 +121,18 @@ Page(kit.protectedPage({
       }
       if (!this.valid(viewEpoch)) return;
       this._initialized = true;
+      this.restoreFolds();
       this.setData({ currencyIndex: this.data.currencies.indexOf(this.data.fields.currency), draftTrashed: false });
       this.stash();
-      this.loadCaptureTemplate(viewEpoch);
-      this.loadSuppliers(viewEpoch).catch(() => {});
-      this.loadCapabilities(viewEpoch);
-      const photos = await store.hydratePhotos(this.data.photos, this._binding);
+      if (!this._readOnly) {
+        this.loadCaptureTemplate(viewEpoch);
+        this.loadSuppliers(viewEpoch).catch(() => {});
+        this.loadCapabilities(viewEpoch);
+      }
+      const photos = await store.hydratePhotos(this.data.photos, this._binding, this);
       if (!this.valid(viewEpoch)) return;
       this.setData({ photos: withPhotoKeys(photos) });
+      fileCache.protect(this,photos.map(photo=>photo.path));
     } catch (e) {
       if (this._alive && /^DRAFT_/.test(e.code || '')) this.setData({ error: e.message, draftBroken: true, ready: false });
       else kit.message(this, e);
@@ -115,18 +140,43 @@ Page(kit.protectedPage({
     finally { if (this._openingEpoch === viewEpoch) this._opening = false; if (this._alive && viewEpoch === this._viewEpoch) this.setData({ loading: false }); }
   },
   backToProducts() { wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/products/index' }) }); },
+  viewSaved() {
+    if (!this._productId || this._saving || this._recognizing || !this.valid() || !this.stash()) return;
+    wx.navigateTo({url:'/pages/editor/index?projectId='+encodeURIComponent(this._projectId)+'&id='+encodeURIComponent(this._productId)+'&saved=yes'});
+  },
   chooseMerchant() { wx.switchTab({ url: '/pages/projects/index' }); },
   requireMerchant(message) { this.setData({ ready:false, merchantRequired:true, error:message || '' }); },
   resetForm(draftId, carried) {
     this._productId = ''; this._draftProductId = draftId || '';
     this._version = null; this._pending = null; this._request = null;
+    this._draftToken = draft.snapshot(null);
     this._retired = []; this._baseline = null; this._conflict = null; this._currencyTouched = false;
     this._revision += 1; this._carriedSupplier = carried || null; this._merchantChoice = (this._merchantChoice || 0) + 1;
     this._captureMerchant = carried && carried.supplier && carried.supplier.trim() ? merchants.normalize(carried) : null;
     const currency = profile.defaultCurrency(this._binding);
     this.setData({ fields: Object.assign({}, domain.emptyFields, carried || {}, { currency }), photos: [],
       ready: true, merchantRequired:false, merchantLocked:!!this._captureMerchant, editing: false, pending: false, demo: false, detailsOpen: false, supplierOpen: !(carried && carried.supplier), evaluationOpen: true,
-      filledCount: 0, estimatedFields: {}, legacyEstimates: [], conflictReview: [], specSummary: '', evaluationSummary: '', currencyIndex: this.data.currencies.indexOf(currency), error: '', notice: '', confirmNotice: '', draftNotice: '', fieldError: null });
+      restoredDraft:false, filledCount: 0, estimatedFields: {}, legacyEstimates: [], conflictReview: [], specSummary: '', evaluationSummary: '', currencyIndex: this.data.currencies.indexOf(currency), error: '', notice: '', confirmNotice: '', draftNotice: '', fieldError: null });
+    this.restoreFolds();
+  },
+  restoreFolds() {
+    if(!this._binding || !session.valid(this._binding))return;
+    const value=wx.getStorageSync('huoji.folds.'+this._binding.owner) || {};
+    this.setData({detailsOpen:value.detailsOpen===true,supplierOpen:!this.data.fields.supplier || value.supplierOpen===true,evaluationOpen:value.evaluationOpen===true,customOpen:value.customOpen===true});
+    if(this.data.restoredDraft){
+      try{const baseline=this._baseline ? JSON.parse(this._baseline).fields || {} : domain.emptyFields,current=this.data.fields;
+        if(domain.factual.some(key=>!['name','sku','unitPrice','currency','colors','supplier','supplierContact','exportRemarks','custom'].includes(key) && domain.stable(current[key])!==domain.stable(baseline[key])))this.setData({detailsOpen:true});
+        if(domain.stable(current.custom)!==domain.stable(baseline.custom))this.setData({customOpen:true});
+      }catch(_){}
+    }
+  },
+  toggleFold(key) {
+    if(this._readOnly)return;
+    this.setData({[key]:!this.data[key]});
+    if(this._binding && session.valid(this._binding)){
+      const storageKey='huoji.folds.'+this._binding.owner,value=wx.getStorageSync(storageKey)||{};
+      try{wx.setStorageSync(storageKey,Object.assign({},value,{[key]:this.data[key]}));}catch(_){}
+    }
   },
   async loadCaptureTemplate(viewEpoch) {
     const binding=this._binding;
@@ -152,12 +202,13 @@ Page(kit.protectedPage({
     this.setData({fieldLabels:this._captureSchema.labels,fieldVisible:this._captureSchema.visible,customInputs:captureTemplate.customValues(this._captureSchema.custom,this.data.fields)});
   },
   customInput(e){
-    if(!this.data.ready || this._saving)return;
+    if(this._readOnly || !this.data.ready || this._saving)return;
     const key=e.currentTarget.dataset.key;
     if(!this._captureSchema || !this._captureSchema.custom.some(c=>c.key===key))return;
     this._revision+=1;
     const custom=Object.assign({},this.data.fields.custom,{[key]:e.detail.value});
-    this.setData({'fields.custom':custom,'fields.confirmed':false});this.stash();
+    const changed=domain.factChanged(this.data.fields,Object.assign({},this.data.fields,{custom}));
+    this.setData({'fields.custom':custom,'fields.confirmed':changed?false:this.data.fields.confirmed,...(changed && this.data.fields.confirmed?{confirmNotice:'资料有改动，请重新核对后再保存'}:{})});this.stash();
   },
   async loadCapabilities(viewEpoch) {
     if (!this.valid(viewEpoch)) return;
@@ -183,7 +234,10 @@ Page(kit.protectedPage({
     if (this.valid(viewEpoch)) this.setData({ suppliers: ['新商户', ...new Set([...(Array.isArray(names) ? names : []), ...cached].filter(v => typeof v === 'string' && v.trim()))] });
   },
   stash() {
+    if (this._readOnly) return true;
     if (!this.valid() || !this.data.ready) return false;
+    draft.protect(this, this._binding, this.data.photos.concat(this._retired || []));
+    fileCache.protect(this,this.data.photos.map(photo=>photo.path));
     const f = this.data.fields;
     this.setData({captureTotals:captureTemplate.totals(f),customInputs:captureTemplate.customValues(this._captureSchema && this._captureSchema.custom,f)});
     this.setData({ specSummary: [f.material, f.dimensions, f.cartonQty !== null && f.cartonQty !== '' ? f.cartonQty + ' 件/箱' : ''].filter(Boolean).join(' · '), evaluationSummary: f.evaluation || f.notes || '' });
@@ -197,15 +251,17 @@ Page(kit.protectedPage({
     });
     if (!this._productId && !this._pending && !meaningful) { this.setData({ draftNotice: '' }); return true; }
     try {
-      draft.write(this._binding, this._projectId, this._draftProductId, { demo: this.data.demo, fields: this.data.fields, photos: this.data.photos, editId: this._productId, version: this._version || null, pendingCommand: this._pending || null, request: this._request || null, retired: this._retired, baseline: this._baseline, legacyEstimates: this.data.legacyEstimates, estimatedFields: this.data.estimatedFields });
+      const options = this._draftToken === undefined ? {} : { expected:this._draftToken };
+      const saved = draft.write(this._binding, this._projectId, this._draftProductId, { demo: this.data.demo, fields: this.data.fields, photos: this.data.photos, editId: this._productId, version: this._version || null, pendingCommand: this._pending || null, request: this._request || null, retired: this._retired, baseline: this._baseline, legacyEstimates: this.data.legacyEstimates, estimatedFields: this.data.estimatedFields }, options);
+      this._draftToken = draft.snapshot(saved);
       this.setData({ draftNotice: '草稿已保存' });
       return true;
-    } catch (_) { if (this._alive) this.setData({ draftNotice: '草稿未能写入，请勿关闭页面，检查存储空间后重试' }); return false; }
+    } catch (error) { if (this._alive) this.setData({ draftNotice: error.code === 'DRAFT_CHANGED' ? error.message : '草稿未能写入，请勿关闭页面，检查存储空间后重试' }); return false; }
   },
   draftSnapshot() { return domain.stable({ fields: domain.fieldsFrom(this.data.fields), photoIds: this.data.photos.map(photo => photo.id || photo.path), version: this._version }); },
   scrollTop() { if (typeof wx.pageScrollTo === 'function') wx.pageScrollTo({ scrollTop: 0, duration: 200 }); },
   showFieldError(key, message) {
-    this.setData({ fieldError: { key, message }, error: '', ...(key !== 'name' && key !== 'unitPrice' && key !== 'quantity' ? { detailsOpen: true } : {}) });
+    this.setData({ fieldError: { key, message }, error: '', ...(key === 'supplier' || key === 'supplierContact' ? {supplierOpen:true} : !['name','unitPrice','sku','colors','exportRemarks'].includes(key) ? { detailsOpen: true } : {}) });
     const focus = () => {
       if (typeof wx.createSelectorQuery !== 'function') { this.scrollTop(); return; }
       const query = wx.createSelectorQuery();
@@ -242,34 +298,37 @@ Page(kit.protectedPage({
     }
   },
   input(e) {
-    if (!this.data.ready || this._saving) return;
+    if (this._readOnly || !this.data.ready || this._saving) return;
     const key = e.currentTarget.dataset.key;
     if (key === 'supplier' && this.data.merchantLocked) return;
     if (!Object.prototype.hasOwnProperty.call(domain.emptyFields, key) || ['confirmed', 'currency', 'favorite', 'rating','custom'].includes(key)) return;
     this._revision += 1;
-    const wasConfirmed = this.data.fields.confirmed && key !== 'evaluation';
-    const fields = Object.assign({}, this.data.fields, { [key]: e.detail.value, confirmed: key === 'evaluation' ? this.data.fields.confirmed : false });
+    const fields = Object.assign({}, this.data.fields, { [key]: e.detail.value });
     if (key === 'supplier') { this._merchantChoice = (this._merchantChoice || 0) + 1; if (fields.supplier !== this.data.fields.supplier) fields.supplierContact = ''; }
     if (key === 'supplierContact') this._merchantChoice = (this._merchantChoice || 0) + 1;
+    const wasConfirmed=this.data.fields.confirmed && domain.factChanged(this.data.fields,fields);
+    if(wasConfirmed)fields.confirmed=false;
     const estimatedFields = Object.assign({}, this.data.estimatedFields); delete estimatedFields[key];
     const patch = { fields, estimatedFields };
     if (wasConfirmed) patch.confirmNotice = '资料有改动，请重新核对后再保存';
     if (this.data.fieldError && this.data.fieldError.key === key) patch.fieldError = null;
     this.setData(patch); this.stash();
   },
-  favorite() { if (!this._saving && this.data.ready) { this._revision += 1; this.setData({ 'fields.favorite': !this.data.fields.favorite }); this.stash(); } },
-  rate(e) { if (!this._saving && this.data.ready) { const value = Number(e.currentTarget.dataset.value); if (value < 1 || value > 5) return; this._revision += 1; this.setData({ 'fields.rating': this.data.fields.rating === value ? null : value }); this.stash(); } },
+  favorite() { if (!this._readOnly && !this._saving && this.data.ready) { this._revision += 1; this.setData({ 'fields.favorite': !this.data.fields.favorite }); this.stash(); } },
+  rate(e) { if (!this._readOnly && !this._saving && this.data.ready) { const value = Number(e.currentTarget.dataset.value); if (value < 1 || value > 5) return; this._revision += 1; this.setData({ 'fields.rating': this.data.fields.rating === value ? null : value }); this.stash(); } },
   currency(e) {
-    if (this._saving) return;
+    if (this._readOnly || this._saving) return;
     this._currencyTouched = true;
     this._revision += 1;
-    const patch = { currencyIndex: Number(e.detail.value), 'fields.currency': this.data.currencies[Number(e.detail.value)], 'fields.confirmed': false };
-    if (this.data.fields.confirmed) patch.confirmNotice = '资料有改动，请重新核对后再保存';
+    const currency=this.data.currencies[Number(e.detail.value)];if(!currency)return;
+    const changed=currency!==this.data.fields.currency;
+    const patch = { currencyIndex: Number(e.detail.value), 'fields.currency': currency, 'fields.confirmed': changed?false:this.data.fields.confirmed };
+    if (this.data.fields.confirmed && changed) patch.confirmNotice = '资料有改动，请重新核对后再保存';
     this.setData(patch); this.stash();
   },
-  confirm(e) { if (!this._saving) { this._revision += 1; const checked = e.detail.value === true; this.setData({ 'fields.confirmed': checked, ...(checked ? { estimatedFields: {} } : {}), confirmNotice: checked ? '' : this.data.confirmNotice }); this.stash(); } },
+  confirm(e) { if (!this._readOnly && !this._saving) { this._revision += 1; const checked = e.detail.value === true; this.setData({ 'fields.confirmed': checked, ...(checked ? { estimatedFields: {} } : {}), confirmNotice: checked ? '' : this.data.confirmNotice }); this.stash(); } },
   async supplier(e) {
-    if (this.data.merchantLocked) return;
+    if (this._readOnly || this.data.merchantLocked) return;
     if (!this.data.ready || this._saving) return;
     const index = Number(e.detail.value), name = this.data.suppliers[index];
     if (!Number.isInteger(index) || !name) return;
@@ -277,7 +336,8 @@ Page(kit.protectedPage({
     const selected = index === 0 ? { supplier: '', supplierContact: '' } : merchants.lookup(this._binding, this._projectId, name) || { supplier: name, supplierContact: '' };
     this._revision += 1;
     if (!this.data.editing) this._carriedSupplier = selected;
-    this.setData({ 'fields.supplier': selected.supplier, 'fields.supplierContact': selected.supplierContact, 'fields.confirmed': false, supplierOpen: index === 0 });
+    const changed=domain.factChanged(this.data.fields,Object.assign({},this.data.fields,selected));
+    this.setData({ 'fields.supplier': selected.supplier, 'fields.supplierContact': selected.supplierContact, 'fields.confirmed': changed?false:this.data.fields.confirmed, supplierOpen: index === 0,...(changed && this.data.fields.confirmed?{confirmNotice:'资料有改动，请重新核对后再保存'}:{}) });
     this.stash();
     if (!this.data.editing) merchants.remember(this._binding, this._projectId, selected);
     if (index === 0 || selected.supplierContact) return;
@@ -297,16 +357,23 @@ Page(kit.protectedPage({
       } while (cursor);
     } catch (_) { if (this.valid(epoch) && choice === this._merchantChoice) kit.toast('商户已切换，联系方式可手工补充'); }
   },
-  toggleDetails() { this.setData({ detailsOpen: !this.data.detailsOpen }); },
-  toggleSupplier() { this.setData({ supplierOpen: !this.data.supplierOpen }); },
-  toggleEvaluation() { this.setData({ evaluationOpen: !this.data.evaluationOpen }); },
+  toggleDetails() { this.toggleFold('detailsOpen'); },
+  toggleSupplier() { this.toggleFold('supplierOpen'); },
+  toggleEvaluation() { this.toggleFold('evaluationOpen'); },
+  toggleCustom() { this.toggleFold('customOpen'); },
+  returnKeepDraft() { if(!this._saving && !this._recognizing && this.stash())this.backToProducts(); },
   async moreActions() {
-    if (this._saving || this._recognizing) return;
-    const items = this.data.editing ? [this.data.fields.confirmed?'取消资料核对':'标记资料已核对', '核对最新版本', '移入回收站', '放弃修改'] : [this.data.fields.confirmed?'取消资料核对':'标记资料已核对','放弃当前草稿'];
+    if (this._readOnly || this._saving || this._recognizing) return;
+    const items = this.data.editing ? [this.data.fields.confirmed?'取消资料核对':'标记资料已核对', '核对最新版本', '移入回收站', '放弃修改','记录新品（保留本机修改）'] : [this.data.fields.confirmed?'取消资料核对':'标记资料已核对','放弃当前草稿'];
     try {
       const choice = await new Promise((resolve, reject) => wx.showActionSheet({ itemList: items, success: resolve, fail: reject }));
       if (!this.valid()) return;
       if(choice.tapIndex===0)return this.confirm({detail:{value:!this.data.fields.confirmed}});
+      if(this.data.editing && choice.tapIndex===4){
+        if(!this.stash())return;
+        merchants.beginCapture(this._binding,this._projectId,{supplier:this.data.fields.supplier,supplierContact:this.data.fields.supplierContact});
+        wx.navigateTo({url:'/pages/editor/index?projectId='+encodeURIComponent(this._projectId),fail:()=>merchants.cancelCapture()});return;
+      }
       if (!this.data.editing || choice.tapIndex === 3) return this.discard();
       if (choice.tapIndex === 1) return this.refreshVersion();
       if (choice.tapIndex === 2) return this.remove();
@@ -315,7 +382,7 @@ Page(kit.protectedPage({
   showOrganizeInfo() { kit.info(this.data.modelEnabled ? '图文自动填写' : '文字自动填写', this.data.modelEnabled ? '所选照片与描述将发送至自动填写服务。仅提取明确的信息，补充空字段，不覆盖手工输入。结果需人工核对。' : '按明确文字提取价格、规格等信息。照片仅存档。可用手机键盘语音输入。未知内容保持空白。'); },
   keyboard(e){this.setData({keyboardHeight:Math.max(0,Number(e.detail.height)||0)});},
   blur(){this.setData({keyboardHeight:0});},
-  toggleAutoOrganize(e){if(this._saving)return;this.setData({autoOrganize:e.detail.value===true});if(this._binding&&session.valid(this._binding))wx.setStorageSync('huoji.autoOrganize.'+this._binding.owner,e.detail.value===true);},
+  toggleAutoOrganize(e){if(this._readOnly || this._saving)return;this.setData({autoOrganize:e.detail.value===true});if(this._binding&&session.valid(this._binding))wx.setStorageSync('huoji.autoOrganize.'+this._binding.owner,e.detail.value===true);},
   saveBack() { if (this._saving || this._recognizing || !this.data.ready) { kit.toast('页面还没准备好，请重试'); return; } this._continueRecording = false;this.setData({continuing:false}); return this.save(); },
   saveNext() {
     if (this._saving || this._recognizing || this._choosing) { kit.toast('正在处理中，请稍候'); return; }
@@ -334,7 +401,7 @@ Page(kit.protectedPage({
     this._photoChoice = null; this._choosing = false; this.stash();
   },
   async addPhotos() {
-    if (this._saving || this._choosing || this.data.photos.length >= 6) return;
+    if (this._readOnly || this._saving || this._choosing || this.data.photos.length >= 6) return;
     const choice = { binding: this._binding };
     this._photoChoice = choice;
     this._choosing = true;
@@ -350,7 +417,7 @@ Page(kit.protectedPage({
     finally { if (this._photoChoice === choice && !choice.photos) this._photoChoice = null; this._choosing = !!this._photoChoice; }
   },
   removePhoto(e) {
-    if (this._saving) return;
+    if (this._readOnly || this._saving) return;
     const index = Number(e.currentTarget.dataset.index), photos = this.data.photos.slice(), removed = photos.splice(index, 1)[0];
     if (!removed) return;
     if (removed.persistent) this._retired.push(removed);
@@ -360,12 +427,11 @@ Page(kit.protectedPage({
     this.setData(patch); this.stash();
   },
   mainPhoto(e) {
-    if (this._saving) return;
+    if (this._readOnly || this._saving) return;
     const photos = this.data.photos.slice(), [photo] = photos.splice(Number(e.currentTarget.dataset.index), 1);
     if (!photo) return;
     photos.unshift(photo); this._revision += 1;
-    const patch = { photos, 'fields.confirmed': false };
-    if (this.data.fields.confirmed) patch.confirmNotice = '资料有改动，请重新核对后再保存';
+    const patch = { photos };
     this.setData(patch); this.stash();
   },
   preview(e) {
@@ -409,6 +475,7 @@ Page(kit.protectedPage({
     return changed;
   },
   async organize() {
+    if (this._readOnly) return;
     if (this._recognizing || this._saving) { kit.toast('正在处理中，请稍候'); return; }
     if (!this.data.ready) { kit.toast('页面还没准备好，请重试'); return; }
     if (!this.data.modelKnown) { kit.toast('还没确认识别是否可用，先点“重试”或手工录入'); return; }
@@ -425,17 +492,16 @@ Page(kit.protectedPage({
       if (revision !== this._revision) { this.setData({ notice: '识别期间内容有改动，本次结果未写入，请重新识别' }); return; }
       const wasConfirmed = this.data.fields.confirmed;
       const source = Object.assign({}, this.data.fields);
-      const defaultCurrency = profile.defaultCurrency(this._binding);
-      if (!this._currencyTouched && (source.unitPrice === null || source.unitPrice === '')) source.currency = '';
-      const merged = domain.mergeExtraction(source, result.fields);
-      if (!merged.fields.currency) merged.fields.currency = defaultCurrency;
+      const extracted=Object.assign({},result.fields);
+      (result.estimates || []).forEach(key=>delete extracted[key]);
+      const merged = domain.mergeExtraction(source, extracted);
       const filledKeys = ['name', 'sku', 'supplier', 'supplierContact', 'notes','exportRemarks', 'colors', 'material', 'dimensions', 'weightG', 'unitPrice', 'moq','quantity','cartons','barcode', 'cartonQty', 'cartonDimensions', 'cartonCbm', 'leadTimeDays', 'tradeTerms'];
       const filled = filledKeys.filter(k => (source[k] === '' || source[k] === null || source[k] === undefined) && merged.fields[k] !== '' && merged.fields[k] !== null && merged.fields[k] !== undefined).length;
       this._revision += 1;
       const estimatedFields = Object.assign({}, this.data.estimatedFields);
       (result.estimates || []).forEach(key => { if (source[key] !== merged.fields[key]) estimatedFields[key] = true; });
-      const patch = { fields: merged.fields, estimatedFields, filledCount: filledKeys.filter(k => !['name', 'unitPrice'].includes(k) && source[k] !== merged.fields[k]).length, detailsOpen: this.data.detailsOpen || filledKeys.some(k => !['name', 'unitPrice','sku','colors','moq','supplier','supplierContact','notes'].includes(k) && merged.fields[k] !== source[k]), currencyIndex: this.data.currencies.indexOf(merged.fields.currency), notice: result.warning + (merged.conflicts.length ? ' 已保留原值：' + merged.conflicts.map(k => names[k]).join('、') : '') };
-      if (wasConfirmed && filled) patch.confirmNotice = '资料有改动，请重新核对后再保存';
+      const patch = { fields: merged.fields, estimatedFields, filledCount: filledKeys.filter(k => !['name', 'unitPrice'].includes(k) && source[k] !== merged.fields[k]).length, currencyIndex: this.data.currencies.indexOf(merged.fields.currency), notice: (result.warning || '') + (merged.conflicts.length ? ' 已保留原值：' + merged.conflicts.map(k => names[k]).join('、') : '') + (merged.conflicts.includes('currency')?'；币种不一致，价格未填入，请核对币种':'') };
+      if (wasConfirmed && !merged.fields.confirmed) patch.confirmNotice = '资料有改动，请重新核对后再保存';
       this.setData(patch); this.stash();
       const estimated = Array.isArray(result.estimates) ? result.estimates.length : 0;
       kit.toast('已补 ' + filled + ' 项' + (estimated ? '（含 ' + estimated + ' 项估算）' : '') + '，请核对');
@@ -461,8 +527,12 @@ Page(kit.protectedPage({
       const name = this.data.fields.supplier.trim();
       if (name && !this.data.suppliers.includes(name)) this.setData({ suppliers: ['新商户', name, ...this.data.suppliers.filter(v => v !== '新商户')] });
     }
-    draft.discard(this._binding, this._projectId, this._draftProductId);
-    this._retired.forEach(draft.removeFile); this._retired = [];
+    draft.release(this);
+    if (this._draftToken !== undefined) {
+      const removed = draft.discard(this._binding, this._projectId, this._draftProductId, {expected:this._draftToken});
+      if (!removed) kit.toast('商品已保存，较新的本机草稿仍保留');
+    }
+    draft.releaseFiles(this._retired); this._retired = [];
     this.setData({editing:true,pending:false});this._baseline=this.draftSnapshot();
     if(product && this.data.autoOrganize && this._saveWasNew && (product.description.trim()||product.photos.length)){
       try { const result=await background.submit(this._binding,product);if(!this.valid(viewEpoch))return;this._version=result.product.version;this._baseline=this.draftSnapshot(); }
@@ -480,15 +550,20 @@ Page(kit.protectedPage({
     this.backToProducts();
   },
   async save() {
+    if (this._readOnly) return;
     if (this._saving || this._recognizing || this._choosing) { kit.toast('正在处理中，请稍候'); return; }
     if (!this.data.ready) { kit.toast('页面还没准备好，请重试'); return; }
     const viewEpoch = this._viewEpoch;
     this._saveWasNew=!this._productId;
-    if(!this.data.fields.name.trim()&&this.data.autoOrganize&&(this.data.photos.length||this.data.fields.description.trim()))this.setData({'fields.name':'未命名商品'});
+    if(!this.data.fields.name.trim()){
+      if(this.data.fields.sku.trim())this.setData({'fields.name':this.data.fields.sku.trim()});
+      else if(this.data.photos.length||this.data.fields.description.trim())this.setData({'fields.name':'未命名商品'});
+    }
     this._merchantChoice = (this._merchantChoice || 0) + 1;
     this._saving = true; this.setData({ saving: true, error: '', fieldError: null });
     try {
       session.assert(this._binding);
+      if(this._draftToken !== undefined && !draft.matches(this._binding,this._projectId,this._draftProductId,this._draftToken)) throw session.error('DRAFT_CHANGED','已有更新的本机草稿，请返回后重新打开；本页未覆盖新草稿');
       if (Object.keys(this.data.estimatedFields || {}).some(k => this.data.estimatedFields[k])) throw session.error('ESTIMATE_UNCONFIRMED', '估算值需手工核对并重新填写后保存');
       if (this._pending) {
         const prior = this._pending;
@@ -528,6 +603,7 @@ Page(kit.protectedPage({
     } finally { if (viewEpoch === this._viewEpoch) { this._saving = false; this._continueRecording = false; if (this._alive) this.setData({ saving: false, continuing:false, pending: !!this._pending }); } }
   },
   async refreshVersion() {
+    if (this._readOnly) return;
     if (!this._productId || this._saving || this._pending) return;
     const revision = this._revision, epoch = this._viewEpoch, productId = this._productId;
     try {
@@ -556,14 +632,14 @@ Page(kit.protectedPage({
     } catch (e) { kit.message(this, e); }
   },
   async resolveVersion(e) {
-    if (!this._conflict || this._saving) return;
+    if (this._readOnly || !this._conflict || this._saving) return;
     const review = this._conflict;
     if (!this.valid(review.epoch) || review.revision !== this._revision || review.productId !== this._productId) { this._conflict = null; this.setData({ conflictReview: [] }); kit.toast('输入已变化，请重新核对版本'); return this.refreshVersion(); }
     this._saving = true; this.setData({ saving: true });
     const fields = Object.assign({}, review.fields); let photos = review.photos;
     if (e.currentTarget.dataset.value === 'remote') review.conflicts.forEach(item => { if (item.key === 'photos') photos = review.remotePhotos; else if(item.key.startsWith('custom:')){const key=item.key.slice(7);if(review.remote.custom[key]===undefined)delete fields.custom[key];else fields.custom[key]=review.remote.custom[key];}else fields[item.key] = review.remote[item.key]; });
     try {
-      photos = await store.hydratePhotos(photos, this._binding); if (!this.valid(review.epoch) || review.revision !== this._revision || review.productId !== this._productId) return;
+      photos = await store.hydratePhotos(photos, this._binding, this); if (!this.valid(review.epoch) || review.revision !== this._revision || review.productId !== this._productId) return;
       this._version = review.remote.version; this._request = null; this._revision += 1;
       this._baseline = domain.stable({ fields: domain.fieldsFrom(review.remote), photoIds: review.remote.photos.map(p=>p.id), version: review.remote.version });
       this._conflict = null; fields.confirmed = false;
@@ -572,18 +648,30 @@ Page(kit.protectedPage({
     finally { this._saving = false; if (this.valid()) this.setData({ saving:false }); }
   },
   async remove() {
-    if (!this._productId || this._saving || this._pending) return;
-    if (!(await kit.confirm('移入回收站', '商品将从列表和导出中移除，可在“我的 · 回收站”恢复到原商户和原日期。'))) return;
+    if (this._readOnly || !this._productId || this._saving || this._pending) return;
+    if (!(await kit.confirm('移入回收站', '商品将从列表和导出中移除，可在“设置 · 回收站”恢复到原商户和原日期。'))) return;
     this._saving = true; this.setData({ saving: true });
     try {
       await api.request('/api/products/' + encodeURIComponent(this._productId) + '/trash', { method: 'POST', data: { version: this._version }, identity: this._binding });
-      if (this.valid()) { draft.discard(this._binding, this._projectId, this._draftProductId); this._retired.forEach(draft.removeFile); this.setData({ ready: false }); this.backToProducts(); }
+      if (this.valid()) {
+        draft.release(this);
+        const options = this._draftToken === undefined ? {expected:draft.snapshot(null)} : {expected:this._draftToken};
+        if(!draft.discard(this._binding,this._projectId,this._draftProductId,options)) kit.toast('商品已移入回收站，较新的本机草稿仍保留');
+        draft.releaseFiles(this._retired); this.setData({ready:false}); this.backToProducts();
+      }
     } catch (e) { kit.message(this, e); }
     finally { this._saving = false; if (this._alive) this.setData({ saving: false }); }
   },
   async discard() {
+    if (this._readOnly) return;
     if (this._saving || !(await this.confirmAction('放弃未保存的内容', '删除本机输入和新照片；不会删除已保存的商品。', '放弃', '取消'))) return;
-    try { session.assert(this._binding); draft.discard(this._binding, this._projectId, this._draftProductId); this._retired.forEach(draft.removeFile); this.setData({ ready: false }); this.backToProducts(); }
+    try {
+      session.assert(this._binding);
+      const options = this._draftToken === undefined ? {} : {expected:this._draftToken};
+      draft.release(this);
+      if (!draft.discard(this._binding,this._projectId,this._draftProductId,options)) { draft.protect(this,this._binding,this.data.photos.concat(this._retired || [])); throw session.error('DRAFT_CHANGED','草稿已经更新，本次没有放弃新草稿，请返回后重新打开'); }
+      draft.releaseFiles(this._retired); this.setData({ready:false}); this.backToProducts();
+    }
     catch (e) { kit.message(this, e); }
   },
   login: kit.loginPage

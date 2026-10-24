@@ -184,12 +184,13 @@ function quotationFormat(template: ProcurementTemplate | undefined, options: Quo
   const foreignCurrency = currencies.some(currency => currency !== 'CNY');
   if (!['selection', 'internal'].includes(audience)) throw new AppError('VALIDATION', '不支持的选品导出受众');
   const title = settings.version === 0 && settings.documentTitle === defaultProcurementTemplate().documentTitle
-    ? '选品表 / PRODUCT SELECTION' : settings.documentTitle;
+    ? '商品资料表 / PRODUCT RECORD' : settings.documentTitle;
   const columns: Column[] = [
     // Disabled columns are omitted entirely, including their values and validations.
     ...settings.columns.filter(column => column.enabled && (column.key !== 'image' || options.images !== false))
       .map(column => ({ ...column, width: column.width ?? 16,
-        label: foreignCurrency && ['unitPrice', 'amount'].includes(column.key) ? column.label.replace(/RMB/gi, '原币种') : column.label })),
+        label: column.key === 'decision' && settings.version === 0 && column.label === '处理决定' ? '资料核对'
+          : foreignCurrency && ['unitPrice', 'amount'].includes(column.key) ? column.label.replace(/RMB/gi, '原币种') : column.label })),
     ...settings.customFields.filter(column => audience === 'internal' || !privateCustomKeys.has(column.key.toLowerCase().replace(/_/g, '')))
       .map(column => ({ ...column, enabled: true })),
   ];
@@ -230,7 +231,7 @@ export function quotationExportMetadata(template: ProcurementTemplate | undefine
   const values: Record<string, string> = { company: settings.company, companyEnglish: settings.companyEnglish,
     address: settings.address, contact: settings.contact, documentTitle: title };
   return {
-    format: 'quotation' as const, audience, templateVersion: settings.version, documentTitle: title, groupBy: 'supplier' as const,
+    format: 'quotation' as const, audience, templateVersion: settings.version, snapshot: products.map(product=>[product.id,product.version]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))), documentTitle: title, groupBy: 'supplier' as const,
     priceSource: '现场记录价格', images: columns.some(column => column.key === 'image' && column.enabled),
     headerRows: settings.layout.headerRows.map(row => ({ ...row, text: values[row.key] ?? row.text })),
     columns: columns.map(column => ({ ...column, hidden: !column.enabled })),
@@ -238,6 +239,14 @@ export function quotationExportMetadata(template: ProcurementTemplate | undefine
     headerSpan: Math.min(settings.layout.headerSpan || 7, columns.length),
     // No purchase field is unconditionally blank; unavailable inputs still stay blank.
     blankPurchaseFields: [] as string[],
+    counts: {
+      products: products.length, merchants: new Set(products.map(product => product.supplier)).size,
+      missingPrice: products.filter(product => product.unitPrice == null).length,
+      missingQuantity: products.filter(product => productValues(product).quantity == null).length,
+      missingVolume: products.filter(product => productValues(product).cbm == null).length,
+      photos: products.reduce((count, product) => count + product.photos.length, 0),
+    },
+    footer: { paymentTerms: settings.paymentTerms, shippingMark: settings.shippingMark, packingRequirements: settings.packingRequirements },
   };
 }
 
@@ -281,6 +290,7 @@ export async function exportQuotation(
   const { settings, title, columns } = quotationFormat(template, options, selected.map(product => product.currency), selected), layout = settings.layout;
 
   const workbook = new ExcelJS.Workbook();
+  workbook.calcProperties.fullCalcOnLoad = true;
   workbook.creator = '货记'; workbook.created = new Date();
   const suppliers = new Map<string, Product[]>();
   for (const product of selected) {
@@ -347,10 +357,10 @@ export async function exportQuotation(
         const buffer = await readPhoto(photo.id);
         imageBytes += buffer?.length || 0;
         if (imageBytes > 40 * 1024 * 1024) throw new AppError('EXPORT_LIMIT', '导出图片超过40MB，请拆分看货任务');
-        if (!buffer) continue;
-        const metadata = await sharp(buffer).metadata();
-        photos.push({ buffer, width: metadata.width || 100, height: metadata.height || 100,
-          extension: metadata.format === 'png' ? 'png' : 'jpeg' });
+        if (!buffer) throw new AppError('INVALID_PHOTO', '已保存的商品照片不可读取，请核对照片或选择无图导出', 409);
+        const exported = await sharp(buffer).rotate().resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
+          .flatten({ background: '#ffffff' }).jpeg({ quality: 80 }).toBuffer({ resolveWithObject: true });
+        photos.push({ buffer: exported.data, width: exported.info.width, height: exported.info.height, extension: 'jpeg' });
       }
       // Keep nulls blank and user strings literal, even when they start with '='.
       const values = columns.map(column => column.businessField ? businessValue(column.businessField, product, project)
@@ -371,6 +381,16 @@ export async function exportQuotation(
         const row = sheet.addRow(values.map((value, index) => typeof value === 'string'
           ? segments[index][segmentIndex] ?? null : segmentIndex === 0 ? value : null));
         firstRow ??= row;
+        if (segmentIndex === 0) {
+          const derived = (key: string, operands: string[]) => {
+            if (!columns.some(column => column.key === key) || !operands.every(operand => columns.some(column => column.key === operand))) return;
+            const refs = operands.map(operand => row.getCell(operand).address);
+            row.getCell(key).value = { formula: `IF(COUNT(${refs.join(',')})=2,${refs.join('*')},"")`, result: core[key] as number | null ?? '' };
+          };
+          if (product.quantity == null) derived('quantity', ['cartons', 'pcsPerCarton']);
+          derived('amount', ['quantity', 'unitPrice']);
+          derived('cbm', ['cartons', 'cartonCbm']);
+        }
         row.height = Math.max(bodyRowMinimum(settings), ...columns.filter(column => column.enabled)
           .map(column => textHeight(row.getCell(column.key).text, layout.bodySize, column.width * 7 - 8, 0) + 12));
         if (segmentIndex === 0 && imageRows) row.height = Math.max(row.height, gridHeight * .75);
@@ -381,9 +401,10 @@ export async function exportQuotation(
           if (!column.primary) cell.border = {};
           if (['unitPrice', 'amount'].includes(column.key)) cell.numFmt = column.currencyPrefix ? `"${product.currency} "${moneyFormat}` : moneyFormat;
           if (['cartonCbm', 'cbm'].includes(column.key)) cell.numFmt = volumeFormat;
-          if (typeof cell.value === 'number') {
+          const numericValue = cell.type === ExcelJS.ValueType.Formula ? cell.result : cell.value;
+          if (typeof numericValue === 'number') {
             const available = Math.max(20, column.width * 7 - 8);
-            const displayed = formattedNumericText(cell.value, column.key, product.currency, column.currencyPrefix, layout);
+            const displayed = formattedNumericText(numericValue, column.key, product.currency, column.currencyPrefix, layout);
             cell.alignment = { ...cell.alignment, wrapText: false, shrinkToFit: textPixels(displayed, layout.bodySize) > available };
           }
         });
@@ -444,7 +465,7 @@ export async function exportQuotation(
             refs.push(start === end ? first : first + ':' + last);
             start = end + 1;
           }
-          const values = sourceRows.map(row => sheet.getCell(row, index + 1).value);
+          const values = sourceRows.map(row => { const source = sheet.getCell(row, index + 1); return source.type === ExcelJS.ValueType.Formula ? source.result : source.value; });
           const known = values.every(value => typeof value === 'number' && Number.isFinite(value));
           cell.value = { formula: `IF(COUNT(${refs.join(',')})=${sourceRows.length},SUM(${refs.join(',')}),"")`,
             result: known ? (values as number[]).reduce((sum, value) => sum + value, 0) : '' };
